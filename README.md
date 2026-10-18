@@ -30,3 +30,15 @@ Use Cloudflare's dashboard to verify the Worker is deployed, then confirm `/mcp`
 2. Add real OAuth 2.1 authorization for ChatGPT remote connector compatibility, including per-user consent and scoped credentials.
 3. Consider least-privilege provider-issued access tokens if Money Lover offers them; until then, treat account credentials as high sensitivity.
 4. Add rate limiting, alerting, and an independent CSV-export backup process.
+
+
+## Cloudflare Access Managed OAuth (recommended for ChatGPT)
+1. In Cloudflare Zero Trust create an Access application for this Worker using **All traffic**, restricting the policy to your own identity.
+2. In Access application's **Advanced settings**, enable **Managed OAuth**.
+3. Find the application's **AUD tag**, and your team domain (for example `https://your-team.cloudflareaccess.com`).
+4. Add `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` as Worker secrets / environment bindings. Never place your financial credentials in Git.
+5. Once both are present, the Worker exclusively verifies Cloudflare's `Cf-Access-Jwt-Assertion` JWT using Cloudflare's published signing keys, issuer, audience and expiry. Its previous MCP bearer-token mode is disabled. Missing either Access binding leaves the original bearer-token mode active: configure both before exposing a public endpoint.
+6. Keep preview routes protected as well; test unauthorized requests and OAuth before sharing the MCP endpoint.
+
+MCP endpoint: `https://moneylover-mcp.luveshsadhwani.workers.dev/mcp`.
+The Worker remains read-only. ChatGPT interoperability has not yet been verified.
