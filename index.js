@@ -12,24 +12,35 @@ const rpcError=(id,code,message)=>({jsonrpc:'2.0',id,error:{code,message}});
 const rpcResult=(id,result)=>({jsonrpc:'2.0',id,result});
 const isDate=(s)=> typeof s==='string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s+'T00:00:00Z')) && new Date(s+'T00:00:00Z').toISOString().slice(0,10)===s;
 const safeId=x=>typeof x==='string' && x.length>=1 && x.length<=256;
-// Diagnostics contain only fixed stage/reason labels and numeric HTTP status.
-// Never include upstream bodies, URLs, headers, credentials or exception messages.
+// Diagnostics allow only stage/reason/status and three sanitized response headers.
+// Never include bodies, URLs, cookies, authorization or raw exception messages.
+function responseDiagnostics(response) {
+ const mime=response.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase();
+ const ray=response.headers.get('cf-ray');
+ return {
+  content_type:['application/json','text/html','text/plain','application/problem+json'].includes(mime)?mime:(mime?'other':null),
+  cf_mitigated:response.headers.get('cf-mitigated')==='challenge'?'challenge':null,
+  upstream_cf_ray:ray && /^[a-f0-9]{16,32}-[A-Z]{3}$/i.test(ray)?ray:null
+ };
+}
 class UpstreamError extends Error {
- constructor(stage, reason, status=null) {
+ constructor(stage, reason, status=null, diagnostics=null) {
   super(`${stage}: ${reason}${status===null?'':` (HTTP ${status})`}`);
-  this.stage=stage;this.reason=reason;this.status=status;
+  this.stage=stage;this.reason=reason;this.status=status;this.diagnostics=diagnostics;
+  if(diagnostics)this.message+='; '+JSON.stringify(diagnostics);
  }
 }
 async function upstreamJson(stage,url,options) {
  let response;
  try { response=await fetch(url,options); }
  catch { throw new UpstreamError(stage,'network_error'); }
- if(response.status>=300 && response.status<400)throw new UpstreamError(stage,'redirect_rejected',response.status);
- if(!response.ok)throw new UpstreamError(stage,'http_error',response.status);
+ const diagnostics=responseDiagnostics(response);
+ if(response.status>=300 && response.status<400)throw new UpstreamError(stage,'redirect_rejected',response.status,diagnostics);
+ if(!response.ok)throw new UpstreamError(stage,'http_error',response.status,diagnostics);
  let data;
  try { data=await response.json(); }
- catch { throw new UpstreamError(stage,'invalid_json',response.status); }
- if(data?.error || data?.e)throw new UpstreamError(stage,'api_error',response.status);
+ catch { throw new UpstreamError(stage,'invalid_json',response.status,diagnostics); }
+ if(data?.error || data?.e)throw new UpstreamError(stage,'api_error',response.status,diagnostics);
  return {data,status:response.status};
 }
 async function getToken(env){
@@ -110,7 +121,7 @@ export default { async fetch(req,env,ctx){
    const name=payload.params?.name,args=payload.params?.arguments??{};
    if(!TOOL_DEFS.some(t=>t.name===name))return reply(rpcError(id,-32602,'Unknown tool'),400);
    try{const data=await invokeTool(name,args,env);return reply(rpcResult(id,{content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data}));}
-   catch(e){if(e instanceof UpstreamError)console.warn(JSON.stringify({event:'moneylover_upstream_error',stage:e.stage,reason:e.reason,status:e.status}));return reply(rpcResult(id,{content:[{type:'text',text:'Unable to retrieve data: '+(e instanceof UpstreamError?e.message:e.message==='Invalid walletId or dates'||e.message.startsWith('Date range')||e.message==='walletId is required'?e.message:'upstream request failed')}],isError:true}));}
+   catch(e){if(e instanceof UpstreamError)console.warn(JSON.stringify({event:'moneylover_upstream_error',stage:e.stage,reason:e.reason,status:e.status,...(e.diagnostics??{})}));return reply(rpcResult(id,{content:[{type:'text',text:'Unable to retrieve data: '+(e instanceof UpstreamError?e.message:e.message==='Invalid walletId or dates'||e.message.startsWith('Date range')||e.message==='walletId is required'?e.message:'upstream request failed')}],isError:true}));}
   }
   return reply(rpcError(id,-32601,'Method not found'),404);
  }catch{return reply({error:'Request failed'},500)}
