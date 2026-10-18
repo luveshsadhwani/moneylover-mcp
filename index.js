@@ -41,29 +41,33 @@ function decodeBase64Url(value) {
  return Uint8Array.from(bytes,c=>c.charCodeAt(0));
 }
 async function validAccessJwt(req,env){
+ const fail=reason=>({ok:false,reason});
  const jwt=req.headers.get('Cf-Access-Jwt-Assertion');
- if(!jwt || jwt.length>12000)return false;
+ if(!jwt)return fail('missing_access_jwt_header');
+ if(jwt.length>12000)return fail('oversized_access_jwt');
  const parts=jwt.split('.');
- if(parts.length!==3)return false;
+ if(parts.length!==3)return fail('malformed_access_jwt');
  try{
   const header=JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
   const claims=JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[1])));
-  if(header.alg!=='RS256'||typeof header.kid!=='string')return false;
+  if(header.alg!=='RS256'||typeof header.kid!=='string')return fail('unsupported_access_jwt_header');
   const domain=new URL(env.ACCESS_TEAM_DOMAIN);
-  if(domain.protocol!=='https:'||!domain.hostname.endsWith('.cloudflareaccess.com')||domain.pathname!=='/')return false;
+  if(domain.protocol!=='https:'||!domain.hostname.endsWith('.cloudflareaccess.com')||domain.pathname!=='/')return fail('invalid_access_team_domain');
   const issuer=domain.origin;
   const now=Math.floor(Date.now()/1000);
-  if(claims.iss!==issuer||!(typeof claims.aud==='string'?claims.aud===env.ACCESS_AUD:Array.isArray(claims.aud)&&claims.aud.includes(env.ACCESS_AUD))||
-   typeof claims.exp!=='number'||claims.exp<=now||typeof claims.iat!=='number'||claims.iat>now+60||
-   (typeof claims.nbf==='number'&&claims.nbf>now+60))return false;
+  if(claims.iss!==issuer)return fail('access_issuer_mismatch');
+  if(!(typeof claims.aud==='string'?claims.aud===env.ACCESS_AUD:Array.isArray(claims.aud)&&claims.aud.includes(env.ACCESS_AUD)))return fail('access_audience_mismatch');
+  if(typeof claims.exp!=='number'||claims.exp<=now||typeof claims.iat!=='number'||claims.iat>now+60||
+    (typeof claims.nbf==='number'&&claims.nbf>now+60))return fail('access_jwt_time_invalid');
   const res=await fetch(issuer+'/cdn-cgi/access/certs',{redirect:'error'});
-  if(!res.ok)return false;
+  if(!res.ok)return fail('access_certificates_unavailable');
   const jwks=await res.json();
   const key=jwks.keys?.find(k=>k.kid===header.kid&&k.kty==='RSA');
-  if(!key)return false;
+  if(!key)return fail('access_signing_key_not_found');
   const imported=await crypto.subtle.importKey('jwk',key,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify']);
-  return crypto.subtle.verify('RSASSA-PKCS1-v1_5',imported,decodeBase64Url(parts[2]),new TextEncoder().encode(parts[0]+'.'+parts[1]));
- }catch{return false;}
+  const verified=await crypto.subtle.verify('RSASSA-PKCS1-v1_5',imported,decodeBase64Url(parts[2]),new TextEncoder().encode(parts[0]+'.'+parts[1]));
+  return verified?{ok:true}:fail('access_jwt_signature_invalid');
+ }catch{return fail('access_jwt_verification_error');}
 }
 
 async function invokeTool(name,args,env){
@@ -84,8 +88,20 @@ export default { async fetch(req,env){
  try{
   const u=new URL(req.url);if(u.pathname!=='/mcp')return reply({error:'Not found'},404);
   if(!env.MONEYLOVER_EMAIL || !env.MONEYLOVER_PASSWORD)return reply({error:'Integration not configured'},503);
-  const accessEnabled=Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD);
-  if(accessEnabled ? !(await validAccessJwt(req,env)) : !(await allowed(req,env)))return reply({error:'Unauthorized'},401,{'www-authenticate':'Bearer'});
+  if(env.ACCESS_TEAM_DOMAIN){
+   if(!env.ACCESS_AUD){
+    console.warn('moneylover_auth: access_audience_not_configured');
+    return reply({error:'Access configuration incomplete'},503);
+   }
+   const auth=await validAccessJwt(req,env);
+   if(!auth.ok){
+    console.warn('moneylover_auth: '+auth.reason);
+    return reply({error:'Unauthorized'},401,{'www-authenticate':'Bearer'});
+   }
+  } else {
+   if(!env.MCP_ACCESS_TOKEN)return reply({error:'Authentication not configured'},503);
+   if(!(await allowed(req,env)))return reply({error:'Unauthorized'},401,{'www-authenticate':'Bearer'});
+  }
   if(req.method==='GET')return new Response(null,{status:405,headers:{allow:'POST','cache-control':'no-store'}});
   if(req.method!=='POST')return reply({error:'Method not allowed'},405,{allow:'POST'});
   const origin=req.headers.get('origin');if(origin && new URL(origin).origin!==u.origin)return reply({error:'Origin not allowed'},403);
