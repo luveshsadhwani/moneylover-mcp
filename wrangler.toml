@@ -1,6 +1,11 @@
-name = "moneylover-readonly-mcp"
+name = "moneylover-mcp"
 main = "index.js"
 compatibility_date = "2026-10-18"
 workers_dev = true
 # Configure these via Wrangler secrets, never in this file:
 # MONEYLOVER_EMAIL, MONEYLOVER_PASSWORD, MCP_ACCESS_TOKEN
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+persist = true
