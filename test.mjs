@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import worker from './src/index.js';
+const endpoint='https://example.workers.dev/mcp';
+const req=(method,body,auth='secret')=>new Request(endpoint,{method,headers:{authorization:`Bearer ${auth}`,'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+const env={MCP_ACCESS_TOKEN:'secret',MONEYLOVER_EMAIL:'fake@example.invalid',MONEYLOVER_PASSWORD:'fake'};
+const json=async r=>({status:r.status,data:await r.json()});
+assert.equal((await worker.fetch(req('POST',{jsonrpc:'2.0',id:1,method:'tools/list'}),{})).status,503);
+assert.equal((await worker.fetch(req('POST',{jsonrpc:'2.0',id:1,method:'tools/list'},'incorrect'),env)).status,401);
+const tools=await json(await worker.fetch(req('POST',{jsonrpc:'2.0',id:1,method:'tools/list'}),env));
+assert.equal(tools.status,200);
+assert.deepEqual(tools.data.result.tools.map(x=>x.name),['get_wallets','get_categories','get_transactions']);
+const bad=await json(await worker.fetch(req('POST',{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'add_transaction'}}),env));
+assert.equal(bad.status,400);
+const dated=await json(await worker.fetch(req('POST',{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'get_transactions',arguments:{walletId:'abc',startDate:'2026-01-01',endDate:'2026-08-01'}}}),env));
+assert.equal(dated.data.result.isError,true);
+console.log('PASS: fail closed, unauthorized denied, tools read-only, writes denied, date bounds enforced');
