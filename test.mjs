@@ -13,4 +13,7 @@ const bad=await json(await worker.fetch(req('POST',{jsonrpc:'2.0',id:2,method:'t
 assert.equal(bad.status,400);
 const dated=await json(await worker.fetch(req('POST',{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'get_transactions',arguments:{walletId:'abc',startDate:'2026-01-01',endDate:'2026-08-01'}}}),env));
 assert.equal(dated.data.result.isError,true);
-console.log('PASS: fail closed, unauthorized denied, tools read-only, writes denied, date bounds enforced');
+const accessEnv={...env,ACCESS_TEAM_DOMAIN:'https://example.cloudflareaccess.com',ACCESS_AUD:'example-audience'};
+assert.equal((await worker.fetch(req('POST',{jsonrpc:'2.0',id:4,method:'tools/list'}),accessEnv)).status,401);
+assert.equal((await worker.fetch(new Request(endpoint,{method:'POST',headers:{'authorization':'Bearer secret','Cf-Access-Jwt-Assertion':'invalid','content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:5,method:'tools/list'})}),accessEnv)).status,401);
+console.log('PASS: fail closed, unauthorized denied, tools read-only, writes denied, date bounds enforced, Access JWT required when enabled');
