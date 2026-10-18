@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import worker from './src/index.js';
+import worker from './index.js';
 const endpoint='https://example.workers.dev/mcp';
 const req=(method,body,auth='secret')=>new Request(endpoint,{method,headers:{authorization:`Bearer ${auth}`,'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
 const env={MCP_ACCESS_TOKEN:'secret',MONEYLOVER_EMAIL:'fake@example.invalid',MONEYLOVER_PASSWORD:'fake'};
