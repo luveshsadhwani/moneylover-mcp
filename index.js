@@ -47,6 +47,7 @@ async function validAccessJwt(req,env){
  if(jwt.length>12000)return fail('oversized_access_jwt');
  const parts=jwt.split('.');
  if(parts.length!==3)return fail('malformed_access_jwt');
+ let phase='decode_token';
  try{
   const header=JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
   const claims=JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[1])));
@@ -59,15 +60,20 @@ async function validAccessJwt(req,env){
   if(!(typeof claims.aud==='string'?claims.aud===env.ACCESS_AUD:Array.isArray(claims.aud)&&claims.aud.includes(env.ACCESS_AUD)))return fail('access_audience_mismatch');
   if(typeof claims.exp!=='number'||claims.exp<=now||typeof claims.iat!=='number'||claims.iat>now+60||
     (typeof claims.nbf==='number'&&claims.nbf>now+60))return fail('access_jwt_time_invalid');
+  phase='fetch_certificates';
   const res=await fetch(issuer+'/cdn-cgi/access/certs',{redirect:'error'});
   if(!res.ok)return fail('access_certificates_unavailable');
+  phase='parse_certificates';
   const jwks=await res.json();
+  phase='select_signing_key';
   const key=jwks.keys?.find(k=>k.kid===header.kid&&k.kty==='RSA');
   if(!key)return fail('access_signing_key_not_found');
+  phase='import_signing_key';
   const imported=await crypto.subtle.importKey('jwk',key,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify']);
+  phase='verify_signature';
   const verified=await crypto.subtle.verify('RSASSA-PKCS1-v1_5',imported,decodeBase64Url(parts[2]),new TextEncoder().encode(parts[0]+'.'+parts[1]));
   return verified?{ok:true}:fail('access_jwt_signature_invalid');
- }catch{return fail('access_jwt_verification_error');}
+ }catch{return fail('access_jwt_error_'+phase);}
 }
 
 async function invokeTool(name,args,env){
