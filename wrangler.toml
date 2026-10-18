@@ -9,3 +9,6 @@ workers_dev = true
 enabled = true
 invocation_logs = true
 persist = true
+
+[vars]
+ACCESS_TEAM_DOMAIN = "https://orange-truth-2154.cloudflareaccess.com"
