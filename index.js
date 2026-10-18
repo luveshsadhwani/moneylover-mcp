@@ -34,6 +34,38 @@ async function allowed(req,env){
  const enc=new TextEncoder();const [a,b]=await Promise.all([crypto.subtle.digest('SHA-256',enc.encode(incoming)),crypto.subtle.digest('SHA-256',enc.encode(env.MCP_ACCESS_TOKEN))]);
  const x=new Uint8Array(a),y=new Uint8Array(b);let diff=0;for(let i=0;i<x.length;i++)diff|=x[i]^y[i];return diff===0;
 }
+
+function decodeBase64Url(value) {
+ const raw=value.replace(/-/g,'+').replace(/_/g,'/');
+ const bytes=atob(raw.padEnd(Math.ceil(raw.length/4)*4,'='));
+ return Uint8Array.from(bytes,c=>c.charCodeAt(0));
+}
+async function validAccessJwt(req,env){
+ const jwt=req.headers.get('Cf-Access-Jwt-Assertion');
+ if(!jwt || jwt.length>12000)return false;
+ const parts=jwt.split('.');
+ if(parts.length!==3)return false;
+ try{
+  const header=JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
+  const claims=JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[1])));
+  if(header.alg!=='RS256'||typeof header.kid!=='string')return false;
+  const domain=new URL(env.ACCESS_TEAM_DOMAIN);
+  if(domain.protocol!=='https:'||!domain.hostname.endsWith('.cloudflareaccess.com')||domain.pathname!=='/')return false;
+  const issuer=domain.origin;
+  const now=Math.floor(Date.now()/1000);
+  if(claims.iss!==issuer||!Array.isArray(claims.aud)||!claims.aud.includes(env.ACCESS_AUD)||
+   typeof claims.exp!=='number'||claims.exp<=now||typeof claims.iat!=='number'||claims.iat>now+60||
+   (typeof claims.nbf==='number'&&claims.nbf>now+60))return false;
+  const res=await fetch(issuer+'/cdn-cgi/access/certs',{redirect:'error'});
+  if(!res.ok)return false;
+  const jwks=await res.json();
+  const key=jwks.keys?.find(k=>k.kid===header.kid&&k.kty==='RSA');
+  if(!key)return false;
+  const imported=await crypto.subtle.importKey('jwk',key,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify']);
+  return crypto.subtle.verify('RSASSA-PKCS1-v1_5',imported,decodeBase64Url(parts[2]),new TextEncoder().encode(parts[0]+'.'+parts[1]));
+ }catch{return false;}
+}
+
 async function invokeTool(name,args,env){
  if(name==='get_wallets')return {wallets:(await query(env,'/wallet/list',{}))??[]};
  if(name==='get_categories'){
@@ -51,8 +83,9 @@ async function invokeTool(name,args,env){
 export default { async fetch(req,env){
  try{
   const u=new URL(req.url);if(u.pathname!=='/mcp')return reply({error:'Not found'},404);
-  if(!env.MCP_ACCESS_TOKEN || !env.MONEYLOVER_EMAIL || !env.MONEYLOVER_PASSWORD)return reply({error:'Integration not configured'},503);
-  if(!(await allowed(req,env)))return reply({error:'Unauthorized'},401,{'www-authenticate':'Bearer'});
+  if(!env.MONEYLOVER_EMAIL || !env.MONEYLOVER_PASSWORD)return reply({error:'Integration not configured'},503);
+  const accessEnabled=Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD);
+  if(accessEnabled ? !(await validAccessJwt(req,env)) : !(await allowed(req,env)))return reply({error:'Unauthorized'},401,{'www-authenticate':'Bearer'});
   if(req.method==='GET')return new Response(null,{status:405,headers:{allow:'POST','cache-control':'no-store'}});
   if(req.method!=='POST')return reply({error:'Method not allowed'},405,{allow:'POST'});
   const origin=req.headers.get('origin');if(origin && new URL(origin).origin!==u.origin)return reply({error:'Origin not allowed'},403);
