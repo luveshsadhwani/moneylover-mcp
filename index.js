@@ -23,7 +23,8 @@ class UpstreamError extends Error {
 async function upstreamJson(stage,url,options) {
  let response;
  try { response=await fetch(url,options); }
- catch { throw new UpstreamError(stage,'network_or_redirect_error'); }
+ catch { throw new UpstreamError(stage,'network_error'); }
+ if(response.status>=300 && response.status<400)throw new UpstreamError(stage,'redirect_rejected',response.status);
  if(!response.ok)throw new UpstreamError(stage,'http_error',response.status);
  let data;
  try { data=await response.json(); }
@@ -32,7 +33,7 @@ async function upstreamJson(stage,url,options) {
  return {data,status:response.status};
 }
 async function getToken(env){
- const start=await upstreamJson('login-url',`${BASE}/user/login-url`,{method:'POST',redirect:'error'});
+ const start=await upstreamJson('login-url',`${BASE}/user/login-url`,{method:'POST',redirect:'manual'});
  const requestToken=start.data?.data?.request_token,loginUrl=start.data?.data?.login_url;
  if(typeof requestToken!=='string'||typeof loginUrl!=='string')throw new UpstreamError('login-url','missing_login_fields',start.status);
  let u;
@@ -40,14 +41,14 @@ async function getToken(env){
  if(u.protocol!=='https:' || !u.hostname.endsWith('.moneylover.me'))throw new UpstreamError('login-url','unexpected_login_host',start.status);
  const client=u.searchParams.get('client');if(!client)throw new UpstreamError('login-url','missing_client',start.status);
  const body=new URLSearchParams({email:env.MONEYLOVER_EMAIL,password:env.MONEYLOVER_PASSWORD});
- const v=await upstreamJson('token',TOKEN,{method:'POST',headers:{Authorization:`Bearer ${requestToken}`,Client:client,'content-type':'application/x-www-form-urlencoded'},body:body.toString(),redirect:'error'});
+ const v=await upstreamJson('token',TOKEN,{method:'POST',headers:{Authorization:`Bearer ${requestToken}`,Client:client,'content-type':'application/x-www-form-urlencoded'},body:body.toString(),redirect:'manual'});
  if(typeof v.data?.access_token!=='string')throw new UpstreamError('token','missing_access_token',v.status);
  return v.data.access_token;
 }
 async function query(env,route,payload,form=false){
  const token=await getToken(env);
  const stage={'/wallet/list':'wallet/list','/category/list':'category/list','/transaction/list':'transaction/list'}[route];
- const res=await upstreamJson(stage,`${BASE}${route}`,{method:'POST',headers:{Authorization:`AuthJWT ${token}`,'content-type':form?'application/x-www-form-urlencoded':'application/json','cache-control':'no-store'},body:form?new URLSearchParams(payload).toString():JSON.stringify(payload),redirect:'error'});
+ const res=await upstreamJson(stage,`${BASE}${route}`,{method:'POST',headers:{Authorization:`AuthJWT ${token}`,'content-type':form?'application/x-www-form-urlencoded':'application/json','cache-control':'no-store'},body:form?new URLSearchParams(payload).toString():JSON.stringify(payload),redirect:'manual'});
  return res.data?.data??null;
 }
 async function allowed(req,env){
