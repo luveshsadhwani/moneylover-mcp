@@ -53,7 +53,7 @@ async function validAccessJwt(req,env){
   if(domain.protocol!=='https:'||!domain.hostname.endsWith('.cloudflareaccess.com')||domain.pathname!=='/')return false;
   const issuer=domain.origin;
   const now=Math.floor(Date.now()/1000);
-  if(claims.iss!==issuer||!Array.isArray(claims.aud)||!claims.aud.includes(env.ACCESS_AUD)||
+  if(claims.iss!==issuer||!(typeof claims.aud==='string'?claims.aud===env.ACCESS_AUD:Array.isArray(claims.aud)&&claims.aud.includes(env.ACCESS_AUD))||
    typeof claims.exp!=='number'||claims.exp<=now||typeof claims.iat!=='number'||claims.iat>now+60||
    (typeof claims.nbf==='number'&&claims.nbf>now+60))return false;
   const res=await fetch(issuer+'/cdn-cgi/access/certs',{redirect:'error'});
