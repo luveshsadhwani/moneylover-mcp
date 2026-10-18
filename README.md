@@ -6,7 +6,7 @@ Initial security-focused adaptation inspired by https://github.com/ferdhika31/mo
 - Only `get_wallets`, `get_categories`, `get_transactions` MCP tools are exposed.
 - Does NOT expose `login`, write transactions, or tokens.
 - Credentials are held in Cloudflare Worker secrets, not D1, code or MCP arguments.
-- Bearer authorization is required on *every* request; there is no anonymous discovery endpoint.
+- Every request requires authentication. Cloudflare Access mode checks the runtime-provided, authenticated `ctx.access` context and the configured AUD tag; the fallback standalone mode requires a separate bearer token.
 - Date queries limited to 93 days, with no caching or logging of financial responses in application code.
 - The Money Lover endpoints are **unofficial**; live compatibility and compliance with provider policies are unverified.
 - The protocol implements stateless JSON responses for MCP Streamable HTTP; it has not passed a ChatGPT compatibility test. ChatGPT's custom connectors may require OAuth rather than a static bearer credential.
@@ -37,8 +37,10 @@ Use Cloudflare's dashboard to verify the Worker is deployed, then confirm `/mcp`
 2. In Access application's **Advanced settings**, enable **Managed OAuth**.
 3. Find the application's **AUD tag**, and your team domain (for example `https://your-team.cloudflareaccess.com`).
 4. Add `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` as Worker secrets / environment bindings. Never place your financial credentials in Git.
-5. Once both are present, the Worker exclusively verifies Cloudflare's `Cf-Access-Jwt-Assertion` JWT using Cloudflare's published signing keys, issuer, audience and expiry. Its previous MCP bearer-token mode is disabled. Missing either Access binding leaves the original bearer-token mode active: configure both before exposing a public endpoint.
+5. Once either Access binding is present, both are required. In Access mode the Worker accepts only a trusted `ctx.access` context injected by Cloudflare after successful authentication, with a matching `ctx.access.aud`. It does not fetch signing certificates or trust user-supplied JWT headers. The previous standalone bearer-token mode is disabled. If only one Access binding is configured, requests fail closed with 503.
 6. Keep preview routes protected as well; test unauthorized requests and OAuth before sharing the MCP endpoint.
 
 MCP endpoint: `https://moneylover-mcp.luveshsadhwani.workers.dev/mcp`.
 The Worker remains read-only. ChatGPT interoperability has not yet been verified.
+
+Cloudflare Workers documentation for the authenticated Access context: https://developers.cloudflare.com/workers/configuration/cloudflare-access/.
