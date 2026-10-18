@@ -12,21 +12,43 @@ const rpcError=(id,code,message)=>({jsonrpc:'2.0',id,error:{code,message}});
 const rpcResult=(id,result)=>({jsonrpc:'2.0',id,result});
 const isDate=(s)=> typeof s==='string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s+'T00:00:00Z')) && new Date(s+'T00:00:00Z').toISOString().slice(0,10)===s;
 const safeId=x=>typeof x==='string' && x.length>=1 && x.length<=256;
-async function readJson(response){if(!response.ok)throw Error('Upstream request failed');const data=await response.json();if(data?.error || data?.e)throw Error('Upstream returned an error');return data;}
+// Diagnostics contain only fixed stage/reason labels and numeric HTTP status.
+// Never include upstream bodies, URLs, headers, credentials or exception messages.
+class UpstreamError extends Error {
+ constructor(stage, reason, status=null) {
+  super(`${stage}: ${reason}${status===null?'':` (HTTP ${status})`}`);
+  this.stage=stage;this.reason=reason;this.status=status;
+ }
+}
+async function upstreamJson(stage,url,options) {
+ let response;
+ try { response=await fetch(url,options); }
+ catch { throw new UpstreamError(stage,'network_or_redirect_error'); }
+ if(!response.ok)throw new UpstreamError(stage,'http_error',response.status);
+ let data;
+ try { data=await response.json(); }
+ catch { throw new UpstreamError(stage,'invalid_json',response.status); }
+ if(data?.error || data?.e)throw new UpstreamError(stage,'api_error',response.status);
+ return {data,status:response.status};
+}
 async function getToken(env){
- const start=await readJson(await fetch(`${BASE}/user/login-url`,{method:'POST',redirect:'error'}));
- const requestToken=start?.data?.request_token,loginUrl=start?.data?.login_url;
- if(typeof requestToken!=='string'||typeof loginUrl!=='string')throw Error('Upstream authentication unavailable');
- const u=new URL(loginUrl);if(u.protocol!=='https:' || !u.hostname.endsWith('.moneylover.me'))throw Error('Unexpected login host');
- const client=u.searchParams.get('client');if(!client)throw Error('Missing upstream client');
+ const start=await upstreamJson('login-url',`${BASE}/user/login-url`,{method:'POST',redirect:'error'});
+ const requestToken=start.data?.data?.request_token,loginUrl=start.data?.data?.login_url;
+ if(typeof requestToken!=='string'||typeof loginUrl!=='string')throw new UpstreamError('login-url','missing_login_fields',start.status);
+ let u;
+ try { u=new URL(loginUrl); } catch { throw new UpstreamError('login-url','invalid_login_url',start.status); }
+ if(u.protocol!=='https:' || !u.hostname.endsWith('.moneylover.me'))throw new UpstreamError('login-url','unexpected_login_host',start.status);
+ const client=u.searchParams.get('client');if(!client)throw new UpstreamError('login-url','missing_client',start.status);
  const body=new URLSearchParams({email:env.MONEYLOVER_EMAIL,password:env.MONEYLOVER_PASSWORD});
- const v=await readJson(await fetch(TOKEN,{method:'POST',headers:{Authorization:`Bearer ${requestToken}`,Client:client,'content-type':'application/x-www-form-urlencoded'},body:body.toString(),redirect:'error'}));
- if(typeof v.access_token!=='string')throw Error('Upstream authentication failed');return v.access_token;
+ const v=await upstreamJson('token',TOKEN,{method:'POST',headers:{Authorization:`Bearer ${requestToken}`,Client:client,'content-type':'application/x-www-form-urlencoded'},body:body.toString(),redirect:'error'});
+ if(typeof v.data?.access_token!=='string')throw new UpstreamError('token','missing_access_token',v.status);
+ return v.data.access_token;
 }
 async function query(env,route,payload,form=false){
  const token=await getToken(env);
- const res=await readJson(await fetch(`${BASE}${route}`,{method:'POST',headers:{Authorization:`AuthJWT ${token}`,'content-type':form?'application/x-www-form-urlencoded':'application/json','cache-control':'no-store'},body:form?new URLSearchParams(payload).toString():JSON.stringify(payload),redirect:'error'}));
- return res?.data??null;
+ const stage={'/wallet/list':'wallet/list','/category/list':'category/list','/transaction/list':'transaction/list'}[route];
+ const res=await upstreamJson(stage,`${BASE}${route}`,{method:'POST',headers:{Authorization:`AuthJWT ${token}`,'content-type':form?'application/x-www-form-urlencoded':'application/json','cache-control':'no-store'},body:form?new URLSearchParams(payload).toString():JSON.stringify(payload),redirect:'error'});
+ return res.data?.data??null;
 }
 async function allowed(req,env){
  const incoming=req.headers.get('authorization')?.match(/^Bearer (.+)$/i)?.[1];
@@ -87,7 +109,7 @@ export default { async fetch(req,env,ctx){
    const name=payload.params?.name,args=payload.params?.arguments??{};
    if(!TOOL_DEFS.some(t=>t.name===name))return reply(rpcError(id,-32602,'Unknown tool'),400);
    try{const data=await invokeTool(name,args,env);return reply(rpcResult(id,{content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data}));}
-   catch(e){return reply(rpcResult(id,{content:[{type:'text',text:'Unable to retrieve data: '+(e.message==='Invalid walletId or dates'||e.message.startsWith('Date range')||e.message==='walletId is required'?e.message:'upstream request failed')}],isError:true}));}
+   catch(e){if(e instanceof UpstreamError)console.warn(JSON.stringify({event:'moneylover_upstream_error',stage:e.stage,reason:e.reason,status:e.status}));return reply(rpcResult(id,{content:[{type:'text',text:'Unable to retrieve data: '+(e instanceof UpstreamError?e.message:e.message==='Invalid walletId or dates'||e.message.startsWith('Date range')||e.message==='walletId is required'?e.message:'upstream request failed')}],isError:true}));}
   }
   return reply(rpcError(id,-32601,'Method not found'),404);
  }catch{return reply({error:'Request failed'},500)}
