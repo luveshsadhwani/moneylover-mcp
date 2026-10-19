@@ -60,7 +60,10 @@ Active wallet and income/expense category membership are checked before writing.
 The service checks the same day's transactions for an exact category/amount/note/date
 match and returns `already_exists` without another write. Writes are serialized
 in the single process. Deliberately identical entries need distinct notes.
-Writes use `/transaction/add` with the reference client's payload and are never
+Writes use `/transaction/add` with a numeric JSON amount, `Accept: application/json`,
+`dataformat: json`, and the default fields from the owner's successful browser/local
+request. Tool amounts remain decimal strings for validation. Wallet/category IDs
+are resolved before calling the tool and remain part of duplicate matching. Writes are never
 automatically retried, even on authentication errors. An ambiguous upstream
 failure returns `outcome_unknown_check_wallet_before_retry`; inspect the wallet
 before proceeding. Only SHA-256 fingerprints of ambiguous requests are retained

@@ -12,6 +12,9 @@ function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
     if (url.endsWith('/transaction/list')) return Response.json({ data: data ?? { daterange: {}, transactions: records } });
     assert.ok(url.endsWith('/transaction/add'));
     assert.equal(options.headers.Authorization, 'AuthJWT fixture');
+    assert.equal(options.headers['content-type'], 'application/json');
+    assert.equal(options.headers.accept, 'application/json');
+    assert.equal(options.headers.dataformat, 'json');
     const body = JSON.parse(options.body); bodies.push(body); writes++;
     if (mode === 'timeout') throw new DOMException('secret upstream detail', 'TimeoutError');
     if (mode === 'reset') throw new TypeError('secret host', { cause: Object.assign(new Error('secret body'), { code: 'ECONNRESET' }) });
@@ -24,10 +27,15 @@ function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
   } });
   return { client, records, bodies, writes: () => writes, logins: () => logins };
 }
-test('creates validated transaction using reference payload and reuses token', async () => {
+test('creates validated transaction using successful browser payload and reuses token', async () => {
   const f = fixture(); const result = await f.client.addTransaction(args);
   assert.equal(result.created, true);
-  assert.deepEqual(f.bodies, [{ account: 'wallet', category: 'category', amount: '12.30', displayDate: '2026-10-19', note: 'Synthetic receipt', with: [] }]);
+  assert.deepEqual(f.bodies, [{
+    with: [], account: 'wallet', category: 'category', amount: 12.3,
+    note: 'Synthetic receipt', displayDate: '2026-10-19', event: '',
+    exclude_report: false, longitude: 0, latitude: 0, addressName: '',
+    addressDetails: '', addressIcon: '', image: ''
+  }]);
   assert.equal(f.logins(), 1);
 });
 test('concurrent duplicate writes serialize and matching entries are not added twice', async () => {
@@ -83,4 +91,18 @@ test('write network diagnostics survive wrapping without copying sensitive excep
     });
     assert.equal(f.writes(), 1);
   }
+});
+
+test('category IDs remain part of duplicate matching', async () => {
+  const f = fixture();
+  f.records.push({ category: 'different-category', amount: 12.3, note: args.note, displayDate: args.date });
+  assert.equal((await f.client.addTransaction(args)).status, 'created');
+  assert.equal(f.writes(), 1);
+});
+test('dynamic entry values reach the write payload', async () => {
+  const f = fixture();
+  await f.client.addTransaction({ ...args, amount: '32.20', date: '2026-10-20', note: 'Different synthetic entry' });
+  assert.equal(f.bodies[0].amount, 32.2);
+  assert.equal(f.bodies[0].displayDate, '2026-10-20');
+  assert.equal(f.bodies[0].note, 'Different synthetic entry');
 });

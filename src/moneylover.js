@@ -112,7 +112,13 @@ export class MoneyloverClient {
     const categories = await this.getCategories(walletId);
     const category = categories.find(c => c._id === categoryId);
     if (!category || category.isDelete || ![1, 2].includes(category.type) || (category.account && category.account !== walletId)) reject('category_unavailable');
-    const payload = { account: walletId, category: categoryId, amount: Number(amount).toFixed(2), displayDate: date, note, with: [] };
+    // Match the owner's successful browser/local request; retain dynamic IDs.
+    const payload = {
+      with: [], account: walletId, category: categoryId, amount: Number(amount),
+      note, displayDate: date, event: '', exclude_report: false,
+      longitude: 0, latitude: 0, addressName: '', addressDetails: '',
+      addressIcon: '', image: ''
+    };
     const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     const result = await this.getTransactions(walletId, date, date);
     const transactions = Array.isArray(result) ? result : result?.transactions;
@@ -128,7 +134,7 @@ export class MoneyloverClient {
     this.#uncertain.add(fingerprint);
     try {
       const response = await this.#json('transaction/add', `${BASE}/transaction/add`, {
-        method: 'POST', headers: { Authorization: `AuthJWT ${token}`, 'content-type': 'application/json', 'cache-control': 'no-store' },
+        method: 'POST', headers: { Authorization: `AuthJWT ${token}`, 'content-type': 'application/json', accept: 'application/json', dataformat: 'json', 'cache-control': 'no-store' },
         body: JSON.stringify(payload)
       });
       // A missing/invalid response cannot prove whether the write committed.
