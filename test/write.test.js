@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { MoneyloverClient } from '../src/moneylover.js';
 const args = { walletId: 'wallet', categoryId: 'category', amount: '12.30', date: '2026-10-19', note: 'Synthetic receipt' };
 function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
-  let writes = 0, logins = 0; const records = [], bodies = [];
-  const client = new MoneyloverClient({ email: 'fixture', password: 'fixture', fetchImpl: async (url, options) => {
+  let writes = 0, logins = 0; const records = [], bodies = [], logs = [];
+  const client = new MoneyloverClient({ email: 'fixture-email', password: 'fixture-password', logger: event => logs.push(event), fetchImpl: async (url, options) => {
     if (url.endsWith('/login-url')) return Response.json({ data: { request_token: 'fixture', login_url: 'https://oauth.moneylover.me/login?client=fixture' } });
     if (url.endsWith('/token')) { logins++; return Response.json({ access_token: 'fixture' }); }
     if (url.endsWith('/wallet/list')) return Response.json({ data: [{ _id: 'wallet', ...wallet }] });
@@ -25,7 +25,7 @@ function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
     if (mode === 'committed-timeout') throw new Error('secret');
     return Response.json({ error: 0, data: { _id: 'synthetic' } });
   } });
-  return { client, records, bodies, writes: () => writes, logins: () => logins };
+  return { client, records, bodies, logs, writes: () => writes, logins: () => logins };
 }
 test('creates validated transaction using successful browser payload and reuses token', async () => {
   const f = fixture(); const result = await f.client.addTransaction(args);
@@ -105,4 +105,27 @@ test('dynamic entry values reach the write payload', async () => {
   assert.equal(f.bodies[0].amount, 32.2);
   assert.equal(f.bodies[0].displayDate, '2026-10-20');
   assert.equal(f.bodies[0].note, 'Different synthetic entry');
+});
+
+test('write logs correlate exact numeric payload and dispatch without credentials or response bodies', async () => {
+  const f = fixture();
+  await f.client.addTransaction(args);
+  const requested = f.logs.find(e => e.event === 'moneylover_write_requested');
+  const sent = f.logs.find(e => e.event === 'moneylover_write_dispatch');
+  assert.deepEqual(sent.payload, f.bodies[0]);
+  assert.deepEqual(requested.payload, sent.payload);
+  assert.equal(typeof sent.payload.amount, 'number');
+  assert.ok(f.logs.every(e => e.request_id === requested.request_id));
+  assert.ok(f.logs.some(e => e.event === 'moneylover_write_confirmed'));
+  for (const secret of ['fixture-email', 'fixture-password', 'AuthJWT', 'Authorization', 'synthetic']) {
+    assert.equal(JSON.stringify(f.logs).includes(secret), false);
+  }
+});
+test('category rejection logs requested payload and never logs a dispatch', async () => {
+  const f = fixture({ category: { _id: 'different' } });
+  await assert.rejects(() => f.client.addTransaction(args), /category_unavailable/);
+  assert.ok(f.logs.some(e => e.event === 'moneylover_write_requested' && e.payload.category === args.categoryId));
+  assert.ok(f.logs.some(e => e.event === 'moneylover_write_stopped' && e.reason === 'category_unavailable' && e.phase === 'before_dispatch'));
+  assert.equal(f.logs.some(e => e.event === 'moneylover_write_dispatch'), false);
+  assert.equal(f.writes(), 0);
 });

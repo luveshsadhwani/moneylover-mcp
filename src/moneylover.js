@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 // Protocol adapted from the owner's Worker bridge; financial responses are never cached.
 const BASE = 'https://web.moneylover.me/api';
 const TOKEN = 'https://oauth.moneylover.me/token';
@@ -18,9 +18,9 @@ export class UpstreamError extends Error {
 export class MoneyloverClient {
   #writeQueue = Promise.resolve(); #uncertain = new Set();
   #token; #expires = Infinity; #pending; #retryAfter = 0;
-  constructor({ email, password, fetchImpl = fetch, now = Date.now }) {
+  constructor({ email, password, fetchImpl = fetch, now = Date.now, logger = () => {} }) {
     if (!email || !password) throw new Error('Money Lover credentials are required');
-    Object.assign(this, { email, password, fetchImpl, now });
+    Object.assign(this, { email, password, fetchImpl, now, logger });
   }
   async #json(stage, url, options) {
     let response;
@@ -100,18 +100,18 @@ export class MoneyloverClient {
     return work;
   }
   async #addTransaction({ walletId, categoryId, amount, date, note = '' }) {
-    const reject = reason => { throw new UpstreamError('transaction/add', reason); };
+    const requestId = randomUUID();
+    let dispatched = false;
+    const log = fields => this.logger({ request_id: requestId, stage: 'transaction/add', ...fields });
+    const reject = reason => {
+      log({ event: 'moneylover_write_stopped', phase: dispatched ? 'after_dispatch' : 'before_dispatch', reason });
+      throw new UpstreamError('transaction/add', reason);
+    };
     if (![walletId, categoryId].every(v => typeof v === 'string' && v.length > 0 && v.length <= 256) ||
         typeof note !== 'string' || note.length > 2000 ||
         typeof amount !== 'string' || !/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 ||
         typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
         !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) reject('invalid_arguments');
-    const wallets = await this.getWallets();
-    const wallet = wallets.find(w => w._id === walletId);
-    if (!wallet || wallet.isDelete || wallet.archived) reject('wallet_unavailable');
-    const categories = await this.getCategories(walletId);
-    const category = categories.find(c => c._id === categoryId);
-    if (!category || category.isDelete || ![1, 2].includes(category.type) || (category.account && category.account !== walletId)) reject('category_unavailable');
     // Match the owner's successful browser/local request; retain dynamic IDs.
     const payload = {
       with: [], account: walletId, category: categoryId, amount: Number(amount),
@@ -119,6 +119,13 @@ export class MoneyloverClient {
       longitude: 0, latitude: 0, addressName: '', addressDetails: '',
       addressIcon: '', image: ''
     };
+    log({ event: 'moneylover_write_requested', payload });
+    const wallets = await this.getWallets();
+    const wallet = wallets.find(w => w._id === walletId);
+    if (!wallet || wallet.isDelete || wallet.archived) reject('wallet_unavailable');
+    const categories = await this.getCategories(walletId);
+    const category = categories.find(c => c._id === categoryId);
+    if (!category || category.isDelete || ![1, 2].includes(category.type) || (category.account && category.account !== walletId)) reject('category_unavailable');
     const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     const result = await this.getTransactions(walletId, date, date);
     const transactions = Array.isArray(result) ? result : result?.transactions;
@@ -127,12 +134,19 @@ export class MoneyloverClient {
       (typeof t.category === 'string' ? t.category : t.category?._id) === categoryId &&
       Number(t.amount) === Number(amount) && (t.note ?? '') === note &&
       typeof t.displayDate === 'string' && t.displayDate.slice(0, 10) === date);
-    if (duplicate) return { status: 'already_exists', created: false };
+    if (duplicate) {
+      log({ event: 'moneylover_write_skipped', reason: 'already_exists' });
+      return { status: 'already_exists', created: false };
+    }
     if (this.#uncertain.has(fingerprint)) reject('retry_blocked_previous_outcome_unknown_no_write_sent');
     if (this.#uncertain.size >= 1000) reject('uncertain_write_limit_check_wallet');
     const token = await this.#getToken();
     this.#uncertain.add(fingerprint);
     try {
+      log({ event: 'moneylover_write_dispatch', method: 'POST', path: '/api/transaction/add',
+        headers: { 'content-type': 'application/json', accept: 'application/json', dataformat: 'json', 'cache-control': 'no-store' },
+        payload });
+      dispatched = true;
       const response = await this.#json('transaction/add', `${BASE}/transaction/add`, {
         method: 'POST', headers: { Authorization: `AuthJWT ${token}`, 'content-type': 'application/json', accept: 'application/json', dataformat: 'json', 'cache-control': 'no-store' },
         body: JSON.stringify(payload)
@@ -143,9 +157,11 @@ export class MoneyloverClient {
         const kind = response.data === null ? 'null' : typeof response.data;
         reject(`unrecognized_response_data_${kind}`);
       }
+      log({ event: 'moneylover_write_confirmed' });
       this.#uncertain.delete(fingerprint);
       return { status: 'created', created: true, transaction: response.data };
     } catch (error) {
+      log({ event: 'moneylover_write_failed', reason: error instanceof UpstreamError ? error.reason : 'internal_error' });
       // Fixed reason labels and numeric codes only; never expose upstream messages.
       if (error instanceof UpstreamError) {
         throw new UpstreamError('transaction/add', `outcome_unknown_${error.reason}_check_wallet_before_retry`, error.status, false, error.apiCode, error.diagnostics);

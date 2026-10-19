@@ -174,8 +174,14 @@ A failed digest is suppressed in `rejected.env`; remove it deliberately to retry
 Network failures also log allowlisted `error_name`, `network_code` and numeric
 `elapsed_ms` fields (including failures while reading the response body). Unknown
 names/codes are suppressed; exception messages and stacks are never copied.
-Use container logs only for sanitized diagnostics, never raw request
-headers or API bodies. Disable the old Worker route only after live acceptance.
+Integration write logging is enabled: `moneylover_write_requested` records the
+validated candidate payload, `moneylover_write_stopped` records validation/retry
+blocks, and `moneylover_write_dispatch` records the exact outgoing JSON payload
+plus allowlisted non-authentication headers. Events share a `request_id`.
+Skipped duplicates, confirmed writes, and failures also emit lifecycle events.
+These logs include transaction notes, amounts, dates and wallet/category IDs.
+Credentials, Authorization headers, tokens, read responses and write response
+bodies are excluded. Inspect with `docker logs --tail 100 --follow moneylover-mcp-1`. Disable the old Worker route only after live acceptance.
 
 The original `index.js`, `test.mjs`, and `wrangler.toml` remain as the legacy Worker
 implementation for rollback/reference; they are excluded from the container.

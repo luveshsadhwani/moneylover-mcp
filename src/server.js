@@ -35,7 +35,7 @@ function rpcServer(client, logger) {
   }, args => call('result', () => client.addTransaction(args)));
   return server;
 }
-export function createApp(config, { client = new MoneyloverClient(config), verify = createVerifier(config), logger = value => console.warn(JSON.stringify(value)) } = {}) {
+export function createApp(config, { logger = value => console.warn(JSON.stringify(value)), client = new MoneyloverClient({ ...config, logger }), verify = createVerifier(config) } = {}) {
   let active = 0;
   return createServer(async (req, res) => {
     res.setHeader('cache-control', 'no-store'); res.setHeader('x-content-type-options', 'nosniff');
