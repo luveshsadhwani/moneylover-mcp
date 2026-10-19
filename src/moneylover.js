@@ -66,7 +66,11 @@ export class MoneyloverClient {
           method: 'POST', headers: { Authorization: `AuthJWT ${token}`, 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json', 'cache-control': 'no-store' },
           body: form ? new URLSearchParams(payload).toString() : JSON.stringify(payload)
         });
-        if (!Array.isArray(result?.data)) throw new UpstreamError(route.slice(1), 'unexpected_data_shape');
+        // Transactions may use an object envelope; preserve it (including metadata)
+        // like the reference client, without guessing or flattening its fields.
+        const data = result?.data;
+        const transactionObject = route === '/transaction/list' && data !== null && typeof data === 'object';
+        if (!Array.isArray(data) && !transactionObject) throw new UpstreamError(route.slice(1), 'unexpected_data_shape');
         return result.data;
       } catch (error) {
         if (!error.auth) throw error; // A 403 challenge must NOT trigger repeated device logins.
