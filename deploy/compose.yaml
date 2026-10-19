@@ -1,0 +1,52 @@
+name: moneylover
+services:
+  mcp:
+    image: ${MCP_IMAGE:?Set MCP_IMAGE to a tested GHCR digest}
+    init: true
+    restart: unless-stopped
+    env_file: /opt/moneylover/service.env
+    environment:
+      MONEYLOVER_EMAIL_FILE: /run/secrets/moneylover_email
+      MONEYLOVER_PASSWORD_FILE: /run/secrets/moneylover_password
+    volumes:
+      - /opt/moneylover/secrets/moneylover_email:/run/secrets/moneylover_email:ro
+      - /opt/moneylover/secrets/moneylover_password:/run/secrets/moneylover_password:ro
+    read_only: true
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=8m']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    networks: [mcp]
+    logging:
+      driver: json-file
+      options: { max-size: 5m, max-file: '2' }
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.1
+    user: '65532:65532'
+    command: ['tunnel', '--no-autoupdate', 'run', '--token-file', '/run/secrets/tunnel_token']
+    restart: unless-stopped
+    volumes:
+      - /opt/moneylover/secrets/tunnel_token:/run/secrets/tunnel_token:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    networks: [mcp]
+    depends_on:
+      mcp: { condition: service_healthy }
+    logging:
+      driver: json-file
+      options: { max-size: 5m, max-file: '2' }
+networks:
+  mcp:
+    name: moneylover_mcp
+    driver: bridge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.90.0/24
+# No host ports, Docker socket, host networking, or shared MongoDB volumes/networks.

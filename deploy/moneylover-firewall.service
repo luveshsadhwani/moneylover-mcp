@@ -1,0 +1,11 @@
+[Unit]
+Description=Isolate Money Lover containers from host and private networks
+After=docker.service
+Requires=docker.service
+Before=moneylover-update.service
+[Service]
+Type=oneshot
+ExecStart=/opt/moneylover/firewall.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

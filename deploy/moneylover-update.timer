@@ -1,0 +1,8 @@
+[Unit]
+Description=Check for tested Money Lover MCP releases
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+[Install]
+WantedBy=timers.target

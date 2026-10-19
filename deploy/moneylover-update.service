@@ -1,0 +1,10 @@
+[Unit]
+Description=Pull and health-check Money Lover MCP container
+After=docker.service network-online.target moneylover-firewall.service
+Requires=docker.service moneylover-firewall.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/moneylover/update.sh
+TimeoutStartSec=300
+UMask=0077
