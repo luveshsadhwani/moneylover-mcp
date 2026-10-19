@@ -12,7 +12,7 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
 }, 'Invalid calendar date');
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 function rpcServer(client, logger) {
-  const server = new McpServer({ name: 'moneylover-readonly', version: '1.0.0' });
+  const server = new McpServer({ name: 'moneylover', version: '1.1.0' });
   const call = async (key, fn) => {
     try { const data = { [key]: await fn() }; return { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data }; }
     catch (error) {
@@ -28,6 +28,11 @@ function rpcServer(client, logger) {
     if (days < 0 || days > 93) return { content: [{ type: 'text', text: 'Date range must be 0 to 93 days' }], isError: true };
     return call('transactions', () => client.getTransactions(walletId, startDate, endDate));
   });
+  server.registerTool('add_transaction', {
+    description: 'Create one income or expense in Money Lover. Use only when the user explicitly asks to save this entry; resolve wallet/category first. Amount is positive in wallet currency, category determines income/expense. Exact date/category/amount/note matches return already_exists. Never blindly retry an unknown outcome: inspect the wallet first.',
+    inputSchema: z.object({ walletId: id, categoryId: id, amount: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/).refine(v => Number(v) > 0), date, note: z.string().max(2000).default('') }).strict(),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  }, args => call('result', () => client.addTransaction(args)));
   return server;
 }
 export function createApp(config, { client = new MoneyloverClient(config), verify = createVerifier(config), logger = value => console.warn(JSON.stringify(value)) } = {}) {

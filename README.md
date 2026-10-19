@@ -1,11 +1,11 @@
-# Money Lover: remote read-only MCP on Docker
+# Money Lover: remote MCP on Docker
 
 Node **22**, an official MCP SDK Streamable HTTP transport (stateless JSON), and
 Cloudflare Tunnel + Access Managed OAuth. Money Lover API calls originate from
 **the DigitalOcean droplet**, not from Workers. The API is unofficial.
 
-Only `get_wallets`, `get_categories`, and `get_transactions` are registered. No
-login/write tools, tokens, or credentials are exposed through MCP arguments.
+`get_wallets`, `get_categories`, `get_transactions`, and `add_transaction` are registered.
+Tokens and credentials stay server-side; no login tool is exposed.
 Transactions require valid calendar dates with an end-minus-start limit of 93 days.
 
 ## Architecture and authorization
@@ -36,7 +36,7 @@ There is one shared in-memory token and one in-flight login promise per process.
 Concurrent calls share login. JWT `exp` or `expires_in` controls cache expiry; an
 opaque token stays cached until an authentication rejection. The decoded JWT is
 only a cache hint, never an authorization decision. HTTP/API code 401 invalidates
-the stale token and retries once. 403 challenges and other upstream errors do NOT
+the stale token and retries reads once; writes are never retried. 403 challenges and other upstream errors do NOT
 trigger repeated login. Failed login/repeated authentication rejection uses a
 30-second cooldown. Other undocumented Money Lover error codes are not guessed.
 
@@ -45,6 +45,30 @@ logs in once, subsequent calls reuse it. No login happens during startup or heal
 checks. Persisting tokens across restarts is deliberately not part of this design.
 Use one replica; restarts/deployments may count as devices. `limitDevice` behavior
 remains unverified. Financial responses are never cached or logged.
+
+## Adding transactions
+
+`add_transaction` takes `walletId`, `categoryId`, a positive decimal **string**
+`amount` (up to two decimal places), `date` (`YYYY-MM-DD`) and optional `note`.
+The amount uses the wallet currency; category type determines income or expense.
+Resolve the wallet and its category first. Call only for an entry the user has
+explicitly asked to save; show the proposed details when they are inferred from
+an email and get the user's approval before saving. Refresh the ChatGPT connector's
+tool list after deployment to enable the new write tool.
+
+Active wallet and income/expense category membership are checked before writing.
+The service checks the same day's transactions for an exact category/amount/note/date
+match and returns `already_exists` without another write. Writes are serialized
+in the single process. Deliberately identical entries need distinct notes.
+Writes use `/transaction/add` with the reference client's payload and are never
+automatically retried, even on authentication errors. An ambiguous upstream
+failure returns `outcome_unknown_check_wallet_before_retry`; inspect the wallet
+before proceeding. Only SHA-256 fingerprints of ambiguous requests are retained
+in memory (maximum 1,000). They disappear on restart; the upstream duplicate check
+still runs. This is best-effort duplicate prevention, not an upstream idempotency
+guarantee: API consistency, multiple replicas or other clients can cause races.
+There are no edit/delete/transfer tools. Real writes have not been smoke-tested;
+all automated write tests use synthetic data and make no financial changes.
 
 ## CI/CD
 
@@ -134,7 +158,7 @@ sudo journalctl -u moneylover-update.service -n 30 --no-pager
 
 Tests use signed fixture JWTs and mock Money Lover responses. They cover missing,
 forged, expired, wrong-issuer/audience/owner Access JWTs; actual MCP SDK HTTP client
-initialization/list/call; three read tools only; invalid dates/ranges/arguments;
+initialization/list/call; three read tools and one write tool; invalid dates/ranges/arguments;
 concurrent token reuse, expiry, bounded 401 recovery, challenge behavior and restart
 semantics. No test contacts your Money Lover account or requires real credentials.
 The pinned SDK negotiates its supported protocol versions (2025-11-25 and legacy);
@@ -149,6 +173,5 @@ headers or API bodies. Disable the old Worker route only after live acceptance.
 
 The original `index.js`, `test.mjs`, and `wrangler.toml` remain as the legacy Worker
 implementation for rollback/reference; they are excluded from the container.
-The port implements only the owner's read-only bridge. Client protocol reference:
-https://github.com/ferdhika31/moneylover-mcp (ISC); no upstream server code, login
-tool, or transaction write tool is included.
+Client protocol reference: https://github.com/ferdhika31/moneylover-mcp (ISC).
+The remote server is independently implemented; no upstream server or login tool is included.

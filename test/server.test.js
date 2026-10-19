@@ -14,8 +14,8 @@ async function sign(overrides = {}, signer = keys.privateKey) {
 }
 const token = await sign();
 const authHeaders = { 'cf-access-jwt-assertion': token };
-let reads = 0;
-const app = createApp(config, { verify, client: { getWallets: async () => { reads++; return [{ id: 'fixture' }]; }, getCategories: async () => [], getTransactions: async () => [] }, logger: () => {} });
+let reads = 0, writes = 0;
+const app = createApp(config, { verify, client: { getWallets: async () => { reads++; return [{ id: 'fixture' }]; }, getCategories: async () => [], getTransactions: async () => [], addTransaction: async () => { writes++; return { status: 'created', created: true }; } }, logger: () => {} });
 await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${app.address().port}/mcp`;
 test.after(() => new Promise(resolve => { app.close(resolve); app.closeAllConnections(); }));
@@ -35,14 +35,18 @@ test('all MCP requests require signed Access JWT before any upstream reads', asy
     assert.equal((await fetch(url, { method })).status, 401);
   }
   assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, { 'cf-access-jwt-assertion': 'forged', 'cf-access-authenticated-user-email': config.owner })).status, 401);
+  assert.equal((await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'add_transaction', arguments: { walletId: 'a', categoryId: 'b', amount: '1', date: '2026-10-19' } } }, {})).status, 401);
+  assert.equal(writes, 0);
   assert.equal(reads, before);
 });
-test('real SDK client initializes, lists only reads and calls a tool over HTTP', async () => {
+test('real SDK client initializes, lists three reads plus one write and calls a tool over HTTP', async () => {
   const client = new Client({ name: 'acceptance', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: authHeaders } }));
   const list = await client.listTools();
-  assert.deepEqual(list.tools.map(t => t.name), ['get_wallets', 'get_categories', 'get_transactions']);
-  assert.ok(list.tools.every(t => t.annotations.readOnlyHint));
+  assert.deepEqual(list.tools.map(t => t.name), ['get_wallets', 'get_categories', 'get_transactions', 'add_transaction']);
+  assert.ok(list.tools.slice(0, 3).every(t => t.annotations.readOnlyHint));
+  assert.equal(list.tools[3].annotations.readOnlyHint, false);
+  assert.equal(list.tools[3].annotations.idempotentHint, false);
   const result = await client.callTool({ name: 'get_wallets', arguments: {} });
   assert.deepEqual(result.structuredContent.wallets, [{ id: 'fixture' }]);
   for (const args of [{ walletId: 'a', startDate: '2026-02-30', endDate: '2026-03-01' }, { walletId: 'a', startDate: '2026-01-01', endDate: '2026-10-01' }, { walletId: 'a', startDate: '2026-01-02', endDate: '2026-01-01' }]) {
@@ -50,6 +54,13 @@ test('real SDK client initializes, lists only reads and calls a tool over HTTP',
   }
   assert.equal((await client.callTool({ name: 'get_wallets', arguments: { password: 'never-accepted' } })).isError, true);
   assert.equal((await client.callTool({ name: 'add_transaction', arguments: {} })).isError, true);
+  const writeArgs = { walletId: 'a', categoryId: 'b', amount: '1.20', date: '2026-10-19' };
+  for (const invalid of [{ amount: '-1' }, { date: '2026-02-30' }, { password: 'forbidden' }]) {
+    assert.equal((await client.callTool({ name: 'add_transaction', arguments: { ...writeArgs, ...invalid } })).isError, true);
+  }
+  assert.equal(writes, 0);
+  assert.equal((await client.callTool({ name: 'add_transaction', arguments: writeArgs })).structuredContent.result.created, true);
+  assert.equal(writes, 1);
   await client.close();
 });
 test('rejects cross-origin calls, malformed and oversized bodies', async () => {

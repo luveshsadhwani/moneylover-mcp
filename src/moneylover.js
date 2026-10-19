@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // Protocol adapted from the owner's Worker bridge; financial responses are never cached.
 const BASE = 'https://web.moneylover.me/api';
 const TOKEN = 'https://oauth.moneylover.me/token';
@@ -8,6 +9,7 @@ export class UpstreamError extends Error {
   }
 }
 export class MoneyloverClient {
+  #writeQueue = Promise.resolve(); #uncertain = new Set();
   #token; #expires = Infinity; #pending; #retryAfter = 0;
   constructor({ email, password, fetchImpl = fetch, now = Date.now }) {
     if (!email || !password) throw new Error('Money Lover credentials are required');
@@ -80,6 +82,53 @@ export class MoneyloverClient {
         }
         if (attempt === 1) throw error;
       }
+    }
+  }
+  // Serialize writes across stateless MCP requests. Never retry a POST that may
+  // already have committed. Only hashes of ambiguous requests are retained.
+  addTransaction(params) {
+    const work = this.#writeQueue.then(() => this.#addTransaction(params));
+    this.#writeQueue = work.catch(() => {});
+    return work;
+  }
+  async #addTransaction({ walletId, categoryId, amount, date, note = '' }) {
+    const reject = reason => { throw new UpstreamError('transaction/add', reason); };
+    if (![walletId, categoryId].every(v => typeof v === 'string' && v.length > 0 && v.length <= 256) ||
+        typeof note !== 'string' || note.length > 2000 ||
+        typeof amount !== 'string' || !/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 ||
+        typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) reject('invalid_arguments');
+    const wallets = await this.getWallets();
+    const wallet = wallets.find(w => w._id === walletId);
+    if (!wallet || wallet.isDelete || wallet.archived) reject('wallet_unavailable');
+    const categories = await this.getCategories(walletId);
+    const category = categories.find(c => c._id === categoryId);
+    if (!category || category.isDelete || ![1, 2].includes(category.type) || (category.account && category.account !== walletId)) reject('category_unavailable');
+    const payload = { account: walletId, category: categoryId, amount: Number(amount).toFixed(2), displayDate: date, note, with: [] };
+    const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    const result = await this.getTransactions(walletId, date, date);
+    const transactions = Array.isArray(result) ? result : result?.transactions;
+    if (!Array.isArray(transactions)) reject('duplicate_check_unavailable');
+    const duplicate = transactions.some(t =>
+      (typeof t.category === 'string' ? t.category : t.category?._id) === categoryId &&
+      Number(t.amount) === Number(amount) && (t.note ?? '') === note &&
+      typeof t.displayDate === 'string' && t.displayDate.slice(0, 10) === date);
+    if (duplicate) return { status: 'already_exists', created: false };
+    if (this.#uncertain.has(fingerprint)) reject('outcome_unknown_check_wallet_before_retry');
+    if (this.#uncertain.size >= 1000) reject('uncertain_write_limit_check_wallet');
+    const token = await this.#getToken();
+    this.#uncertain.add(fingerprint);
+    try {
+      const response = await this.#json('transaction/add', `${BASE}/transaction/add`, {
+        method: 'POST', headers: { Authorization: `AuthJWT ${token}`, 'content-type': 'application/json', 'cache-control': 'no-store' },
+        body: JSON.stringify(payload)
+      });
+      // A missing/invalid response cannot prove whether the write committed.
+      if (!Object.hasOwn(response ?? {}, 'data') || response.data === null || typeof response.data !== 'object') reject('outcome_unknown_check_wallet_before_retry');
+      this.#uncertain.delete(fingerprint);
+      return { status: 'created', created: true, transaction: response.data };
+    } catch {
+      throw new UpstreamError('transaction/add', 'outcome_unknown_check_wallet_before_retry');
     }
   }
   getWallets() { return this.#query('/wallet/list', {}); }
