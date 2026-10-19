@@ -45,5 +45,5 @@ test('wallets and categories still require arrays; API errors precede payload va
   await assert.rejects(() => f.client.getWallets(), /unexpected_data_shape/);
   await assert.rejects(() => f.client.getCategories('wallet'), /unexpected_data_shape/);
   const failed = fixture({ response: { error: 500, data: { private: 'body' } } });
-  await assert.rejects(() => failed.client.getTransactions('wallet', '2026-10-01', '2026-10-19'), error => error.message === 'transaction/list: api_error (HTTP 200)');
+  await assert.rejects(() => failed.client.getTransactions('wallet', '2026-10-01', '2026-10-19'), error => error.message === 'transaction/list: api_error (HTTP 200) (API 500)');
 });

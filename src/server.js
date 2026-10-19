@@ -17,7 +17,7 @@ function rpcServer(client, logger) {
     try { const data = { [key]: await fn() }; return { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data }; }
     catch (error) {
       const message = error instanceof UpstreamError ? error.message : 'Request failed';
-      if (error instanceof UpstreamError) logger({ event: 'moneylover_upstream_error', stage: error.stage, reason: error.reason, status: error.status });
+      if (error instanceof UpstreamError) logger({ event: 'moneylover_upstream_error', stage: error.stage, reason: error.reason, status: error.status, api_code: error.apiCode });
       return { content: [{ type: 'text', text: message }], isError: true };
     }
   };

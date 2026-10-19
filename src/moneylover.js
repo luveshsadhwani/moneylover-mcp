@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 const BASE = 'https://web.moneylover.me/api';
 const TOKEN = 'https://oauth.moneylover.me/token';
 export class UpstreamError extends Error {
-  constructor(stage, reason, status = null, auth = false) {
-    super(`${stage}: ${reason}${status === null ? '' : ` (HTTP ${status})`}`);
-    Object.assign(this, { stage, reason, status, auth });
+  constructor(stage, reason, status = null, auth = false, apiCode = null) {
+    super(`${stage}: ${reason}${status === null ? '' : ` (HTTP ${status})`}${apiCode === null ? '' : ` (API ${apiCode})`}`);
+    Object.assign(this, { stage, reason, status, auth, apiCode });
   }
 }
 export class MoneyloverClient {
@@ -26,7 +26,7 @@ export class MoneyloverClient {
     let data;
     try { data = await response.json(); } catch { throw new UpstreamError(stage, 'invalid_json', response.status); }
     const code = data?.error ?? data?.e ?? 0;
-    if (code) throw new UpstreamError(stage, 'api_error', response.status, Number(code) === 401);
+    if (code) throw new UpstreamError(stage, 'api_error', response.status, Number(code) === 401, typeof code === 'number' && Number.isSafeInteger(code) ? code : null);
     return data;
   }
   async #login() {
@@ -114,7 +114,7 @@ export class MoneyloverClient {
       Number(t.amount) === Number(amount) && (t.note ?? '') === note &&
       typeof t.displayDate === 'string' && t.displayDate.slice(0, 10) === date);
     if (duplicate) return { status: 'already_exists', created: false };
-    if (this.#uncertain.has(fingerprint)) reject('outcome_unknown_check_wallet_before_retry');
+    if (this.#uncertain.has(fingerprint)) reject('retry_blocked_previous_outcome_unknown_no_write_sent');
     if (this.#uncertain.size >= 1000) reject('uncertain_write_limit_check_wallet');
     const token = await this.#getToken();
     this.#uncertain.add(fingerprint);
@@ -124,11 +124,19 @@ export class MoneyloverClient {
         body: JSON.stringify(payload)
       });
       // A missing/invalid response cannot prove whether the write committed.
-      if (!Object.hasOwn(response ?? {}, 'data') || response.data === null || typeof response.data !== 'object') reject('outcome_unknown_check_wallet_before_retry');
+      if (!Object.hasOwn(response ?? {}, 'data')) reject('unrecognized_response_missing_data');
+      if (response.data === null || typeof response.data !== 'object') {
+        const kind = response.data === null ? 'null' : typeof response.data;
+        reject(`unrecognized_response_data_${kind}`);
+      }
       this.#uncertain.delete(fingerprint);
       return { status: 'created', created: true, transaction: response.data };
-    } catch {
-      throw new UpstreamError('transaction/add', 'outcome_unknown_check_wallet_before_retry');
+    } catch (error) {
+      // Fixed reason labels and numeric codes only; never expose upstream messages.
+      if (error instanceof UpstreamError) {
+        throw new UpstreamError('transaction/add', `outcome_unknown_${error.reason}_check_wallet_before_retry`, error.status, false, error.apiCode);
+      }
+      throw new UpstreamError('transaction/add', 'outcome_unknown_internal_error_check_wallet_before_retry');
     }
   }
   getWallets() { return this.#query('/wallet/list', {}); }
