@@ -2,10 +2,17 @@ import { createHash } from 'node:crypto';
 // Protocol adapted from the owner's Worker bridge; financial responses are never cached.
 const BASE = 'https://web.moneylover.me/api';
 const TOKEN = 'https://oauth.moneylover.me/token';
+// Never copy exception messages, stacks, URLs, hostnames or arbitrary codes.
+const ERROR_NAMES = new Set(['Error', 'TypeError', 'TimeoutError', 'AbortError', 'SyntaxError', 'AggregateError']);
+const NETWORK_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_ABORTED', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER']);
+function networkDiagnostics(error, started) {
+  const code = [error?.cause?.code, error?.code].find(value => NETWORK_CODES.has(value));
+  return { error_name: ERROR_NAMES.has(error?.name) ? error.name : 'OtherError', network_code: code ?? null, elapsed_ms: Math.max(0, Math.round(performance.now() - started)) };
+}
 export class UpstreamError extends Error {
-  constructor(stage, reason, status = null, auth = false, apiCode = null) {
+  constructor(stage, reason, status = null, auth = false, apiCode = null, diagnostics = null) {
     super(`${stage}: ${reason}${status === null ? '' : ` (HTTP ${status})`}${apiCode === null ? '' : ` (API ${apiCode})`}`);
-    Object.assign(this, { stage, reason, status, auth, apiCode });
+    Object.assign(this, { stage, reason, status, auth, apiCode, diagnostics });
   }
 }
 export class MoneyloverClient {
@@ -17,14 +24,15 @@ export class MoneyloverClient {
   }
   async #json(stage, url, options) {
     let response;
+    const started = performance.now();
     try { response = await this.fetchImpl(url, { ...options, redirect: 'manual', signal: AbortSignal.timeout(20000) }); }
-    catch { throw new UpstreamError(stage, 'network_error'); }
+    catch (error) { throw new UpstreamError(stage, 'network_error', null, false, null, networkDiagnostics(error, started)); }
     if (!response.ok) {
       const challenge = response.headers.get('cf-mitigated') === 'challenge';
       throw new UpstreamError(stage, challenge ? 'cloudflare_challenge' : 'http_error', response.status, response.status === 401);
     }
     let data;
-    try { data = await response.json(); } catch { throw new UpstreamError(stage, 'invalid_json', response.status); }
+    try { data = await response.json(); } catch (error) { throw new UpstreamError(stage, 'invalid_json', response.status, false, null, networkDiagnostics(error, started)); }
     const code = data?.error ?? data?.e ?? 0;
     if (code) throw new UpstreamError(stage, 'api_error', response.status, Number(code) === 401, typeof code === 'number' && Number.isSafeInteger(code) ? code : null);
     return data;
@@ -134,7 +142,7 @@ export class MoneyloverClient {
     } catch (error) {
       // Fixed reason labels and numeric codes only; never expose upstream messages.
       if (error instanceof UpstreamError) {
-        throw new UpstreamError('transaction/add', `outcome_unknown_${error.reason}_check_wallet_before_retry`, error.status, false, error.apiCode);
+        throw new UpstreamError('transaction/add', `outcome_unknown_${error.reason}_check_wallet_before_retry`, error.status, false, error.apiCode, error.diagnostics);
       }
       throw new UpstreamError('transaction/add', 'outcome_unknown_internal_error_check_wallet_before_retry');
     }

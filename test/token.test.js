@@ -47,3 +47,15 @@ test('wallets and categories still require arrays; API errors precede payload va
   const failed = fixture({ response: { error: 500, data: { private: 'body' } } });
   await assert.rejects(() => failed.client.getTransactions('wallet', '2026-10-01', '2026-10-19'), error => error.message === 'transaction/list: api_error (HTTP 200) (API 500)');
 });
+
+test('unknown exception names and codes are excluded from diagnostics', async () => {
+  const c = new MoneyloverClient({ email: 'e', password: 'p', fetchImpl: async () => {
+    throw Object.assign(new Error('secret-password'), { name: 'secret-name', cause: { code: 'secret-code', message: 'private' } });
+  } });
+  await assert.rejects(() => c.getWallets(), error => {
+    assert.equal(error.diagnostics.error_name, 'OtherError');
+    assert.equal(error.diagnostics.network_code, null);
+    assert.equal(JSON.stringify(error).includes('secret'), false);
+    return true;
+  });
+});

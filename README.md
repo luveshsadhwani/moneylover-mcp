@@ -168,7 +168,10 @@ Pause updates: `sudo touch /opt/moneylover/PAUSED`.
 Rollback: `sudo /opt/moneylover/update.sh --rollback` (also pauses updates).
 Resume: `sudo rm /opt/moneylover/PAUSED`.
 A failed digest is suppressed in `rejected.env`; remove it deliberately to retry.
-Use container logs only for sanitized stage/reason/status errors, never raw request
+Network failures also log allowlisted `error_name`, `network_code` and numeric
+`elapsed_ms` fields (including failures while reading the response body). Unknown
+names/codes are suppressed; exception messages and stacks are never copied.
+Use container logs only for sanitized diagnostics, never raw request
 headers or API bodies. Disable the old Worker route only after live acceptance.
 
 The original `index.js`, `test.mjs`, and `wrangler.toml` remain as the legacy Worker

@@ -13,7 +13,8 @@ function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
     assert.ok(url.endsWith('/transaction/add'));
     assert.equal(options.headers.Authorization, 'AuthJWT fixture');
     const body = JSON.parse(options.body); bodies.push(body); writes++;
-    if (mode === 'timeout') throw new Error('secret upstream detail');
+    if (mode === 'timeout') throw new DOMException('secret upstream detail', 'TimeoutError');
+    if (mode === 'reset') throw new TypeError('secret host', { cause: Object.assign(new Error('secret body'), { code: 'ECONNRESET' }) });
     if (mode === 'api-error') return Response.json({ error: 422, msg: 'private details', data: 'private' });
     if (mode === '401') return new Response('', { status: 401 });
     if (mode === 'malformed') return Response.json({});
@@ -68,4 +69,18 @@ test('write diagnostics preserve sanitized HTTP and numeric API codes', async ()
   await assert.rejects(() => invalid.client.addTransaction(args), e => e.message === 'transaction/add: outcome_unknown_api_error_check_wallet_before_retry (HTTP 200) (API 422)' && e.apiCode === 422);
   const malformed = fixture({ mode: 'malformed' });
   await assert.rejects(() => malformed.client.addTransaction(args), /outcome_unknown_unrecognized_response_missing_data/);
+});
+
+test('write network diagnostics survive wrapping without copying sensitive exceptions', async () => {
+  for (const [mode, name, code] of [['timeout', 'TimeoutError', null], ['reset', 'TypeError', 'ECONNRESET']]) {
+    const f = fixture({ mode });
+    await assert.rejects(() => f.client.addTransaction(args), error => {
+      assert.equal(error.diagnostics.error_name, name);
+      assert.equal(error.diagnostics.network_code, code);
+      assert.ok(Number.isInteger(error.diagnostics.elapsed_ms) && error.diagnostics.elapsed_ms >= 0);
+      assert.equal(JSON.stringify(error).includes('secret'), false);
+      return true;
+    });
+    assert.equal(f.writes(), 1);
+  }
 });
