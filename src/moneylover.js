@@ -124,16 +124,15 @@ export class MoneyloverClient {
     const wallet = wallets.find(w => w._id === walletId);
     if (!wallet || wallet.isDelete || wallet.archived) reject('wallet_unavailable');
     const categories = await this.getCategories(walletId);
-    // list-all supplies the consolidated IDs used by transaction/add. Its
-    // account field is not wallet ownership (verified by the owner's writes).
+    // list-all repeats consolidated IDs per account. getCategories scopes the
+    // rows to the requested wallet before we check for an unambiguous ID.
     // Accept aliases only when the API explicitly lists the relationship.
     const matches = categories.filter(c => c._id === categoryId ||
       (Array.isArray(c.categories) && c.categories.includes(categoryId)));
     const category = matches.length === 1 ? matches[0] : null;
     if (!category || typeof category._id !== 'string' || !category._id ||
         category.isDelete || category.archived || ![1, 2].includes(category.type)) reject('category_unavailable');
-    // Conservatively refuse an explicit exclusion; do not infer availability
-    // from the originating account field or from a category's name.
+    // Conservatively refuse an explicit exclusion.
     if (Array.isArray(category.exclude_accounts) && category.exclude_accounts.includes(walletId)) reject('category_excluded');
     payload.category = category._id;
     const categoryIds = new Set([categoryId, category._id,
@@ -183,8 +182,9 @@ export class MoneyloverClient {
     }
   }
   getWallets() { return this.#query('/wallet/list', {}); }
-  // walletId remains in the MCP schema for compatibility. list-all is an
-  // authenticated user-wide catalog, not a wallet-scoped category/list call.
-  getCategories(walletId) { return this.#query('/category/list-all', {}); }
+  async getCategories(walletId) {
+    const categories = await this.#query('/category/list-all', {});
+    return categories.filter(category => category?.account === walletId);
+  }
   getTransactions(walletId, startDate, endDate) { return this.#query('/transaction/list', { walletId, startDate, endDate }); }
 }

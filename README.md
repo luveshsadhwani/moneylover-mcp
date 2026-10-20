@@ -57,10 +57,11 @@ an email and get the user's approval before saving. Refresh the ChatGPT connecto
 tool list after deployment to enable the new write tool.
 
 Active wallet and income/expense category validity are checked before writing.
-`get_categories` now uses the user-wide `/category/list-all` catalog, whose
-consolidated IDs are accepted by writes. Its `walletId` argument is retained for
-connector compatibility; the returned catalog is not wallet-scoped. A category's
-`account` field does not restrict it to that wallet. Explicit `exclude_accounts`
+`get_categories` uses the `/category/list-all` catalog, whose consolidated IDs
+are accepted by writes. The catalog repeats those IDs in separate rows per wallet;
+results are filtered by `account === walletId` before name/ID resolution and
+write validation. Exactly one matching row within that wallet is required.
+Explicit `exclude_accounts`
 entries are conservatively blocked. Only API-provided `categories` alias IDs are
 recognized; names are never used to guess alias relationships. Unknown IDs fail
 validation. Alias inputs are normalized to the consolidated ID before dispatch

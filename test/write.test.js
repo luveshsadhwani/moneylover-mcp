@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MoneyloverClient } from '../src/moneylover.js';
 const args = { walletId: 'wallet', categoryId: 'category', amount: '12.30', date: '2026-10-19', note: 'Synthetic receipt' };
-function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
+function fixture({ mode = 'success', wallet = {}, category = {}, categoryRows, data } = {}) {
   let writes = 0, logins = 0; const records = [], bodies = [], logs = [];
   const client = new MoneyloverClient({ email: 'fixture-email', password: 'fixture-password', logger: event => logs.push(event), fetchImpl: async (url, options) => {
     if (url.endsWith('/login-url')) return Response.json({ data: { request_token: 'fixture', login_url: 'https://oauth.moneylover.me/login?client=fixture' } });
@@ -10,7 +10,7 @@ function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
     if (url.endsWith('/wallet/list')) return Response.json({ data: [{ _id: 'wallet', ...wallet }] });
     if (url.endsWith('/category/list-all')) {
       assert.deepEqual(JSON.parse(options.body), {});
-      return Response.json({ data: [{ _id: 'category', account: 'other-origin-wallet', type: 2, ...category }] });
+      return Response.json({ data: categoryRows ?? [{ _id: 'category', account: 'wallet', type: 2, ...category }] });
     }
     if (url.endsWith('/transaction/list')) return Response.json({ data: data ?? { daterange: {}, transactions: records } });
     assert.ok(url.endsWith('/transaction/add'));
@@ -133,9 +133,9 @@ test('category rejection logs requested payload and never logs a dispatch', asyn
   assert.equal(f.writes(), 0);
 });
 
-test('consolidated categories support income and expense across originating wallets', async () => {
+test('consolidated categories support income and expense in the selected wallet', async () => {
   for (const type of [1, 2]) {
-    const f = fixture({ category: { type, account: 'another-wallet', exclude_accounts: [] } });
+    const f = fixture({ category: { type, account: 'wallet', exclude_accounts: [] } });
     assert.equal((await f.client.addTransaction(args)).created, true);
     assert.equal(f.bodies[0].category, 'category');
   }
@@ -162,4 +162,27 @@ test('unverified category IDs are rejected before dispatch', async () => {
   const f = fixture();
   await assert.rejects(() => f.client.addTransaction({ ...args, categoryId: 'unknown' }), /category_unavailable/);
   assert.equal(f.writes(), 0);
+});
+
+test('list-all repeated consolidated IDs are scoped by wallet before validation', async () => {
+  const categoryRows = Array.from({ length: 23 }, (_, i) => ({
+    _id: 'category', name: 'Food & Beverage', type: 2,
+    account: i === 14 ? 'wallet' : `other-wallet-${i}`, exclude_accounts: []
+  }));
+  const f = fixture({ categoryRows });
+  assert.deepEqual(await f.client.getCategories('wallet'), [categoryRows[14]]);
+  assert.equal((await f.client.addTransaction(args)).created, true);
+  assert.equal(f.writes(), 1);
+  assert.equal(f.bodies[0].category, 'category');
+  assert.equal(f.bodies[0].account, 'wallet');
+});
+test('other wallet rows cannot authorize a write or override selected wallet restrictions', async () => {
+  const other = { _id: 'category', name: 'Food & Beverage', account: 'other', type: 2 };
+  for (const categoryRows of [[other], [other, { ...other, account: 'wallet', isDelete: true }],
+    [other, { ...other, account: 'wallet', exclude_accounts: ['wallet'] }],
+    [other, { ...other, account: 'wallet' }, { ...other, account: 'wallet' }]]) {
+    const f = fixture({ categoryRows });
+    await assert.rejects(() => f.client.addTransaction(args), /category_(unavailable|excluded)/);
+    assert.equal(f.writes(), 0);
+  }
 });
