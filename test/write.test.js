@@ -8,7 +8,10 @@ function fixture({ mode = 'success', wallet = {}, category = {}, data } = {}) {
     if (url.endsWith('/login-url')) return Response.json({ data: { request_token: 'fixture', login_url: 'https://oauth.moneylover.me/login?client=fixture' } });
     if (url.endsWith('/token')) { logins++; return Response.json({ access_token: 'fixture' }); }
     if (url.endsWith('/wallet/list')) return Response.json({ data: [{ _id: 'wallet', ...wallet }] });
-    if (url.endsWith('/category/list')) return Response.json({ data: [{ _id: 'category', account: 'wallet', type: 2, ...category }] });
+    if (url.endsWith('/category/list-all')) {
+      assert.deepEqual(JSON.parse(options.body), {});
+      return Response.json({ data: [{ _id: 'category', account: 'other-origin-wallet', type: 2, ...category }] });
+    }
     if (url.endsWith('/transaction/list')) return Response.json({ data: data ?? { daterange: {}, transactions: records } });
     assert.ok(url.endsWith('/transaction/add'));
     assert.equal(options.headers.Authorization, 'AuthJWT fixture');
@@ -60,7 +63,7 @@ test('a committed timeout is found by subsequent duplicate check', async () => {
   assert.equal((await f.client.addTransaction(args)).status, 'already_exists'); assert.equal(f.writes(), 1);
 });
 test('invalid wallet/category and unrecognized duplicate-check shape fail before writes', async () => {
-  for (const options of [{ wallet: { archived: true } }, { wallet: { _id: 'other' } }, { category: { account: 'other' } }, { category: { type: 3 } }, { category: { isDelete: true } }, { data: {} }]) {
+  for (const options of [{ wallet: { archived: true } }, { wallet: { _id: 'other' } }, { category: { type: 3 } }, { category: { isDelete: true } }, { category: { archived: true } }, { category: { exclude_accounts: ['wallet'] } }, { data: {} }]) {
     const f = fixture(options); await assert.rejects(() => f.client.addTransaction(args)); assert.equal(f.writes(), 0);
   }
 });
@@ -127,5 +130,36 @@ test('category rejection logs requested payload and never logs a dispatch', asyn
   assert.ok(f.logs.some(e => e.event === 'moneylover_write_requested' && e.payload.category === args.categoryId));
   assert.ok(f.logs.some(e => e.event === 'moneylover_write_stopped' && e.reason === 'category_unavailable' && e.phase === 'before_dispatch'));
   assert.equal(f.logs.some(e => e.event === 'moneylover_write_dispatch'), false);
+  assert.equal(f.writes(), 0);
+});
+
+test('consolidated categories support income and expense across originating wallets', async () => {
+  for (const type of [1, 2]) {
+    const f = fixture({ category: { type, account: 'another-wallet', exclude_accounts: [] } });
+    assert.equal((await f.client.addTransaction(args)).created, true);
+    assert.equal(f.bodies[0].category, 'category');
+  }
+});
+test('explicit aliases normalize writes and block duplicates across both ID forms', async () => {
+  const f = fixture({ category: { categories: ['wallet-category'] } });
+  const aliasArgs = { ...args, categoryId: 'wallet-category' };
+  assert.equal((await f.client.addTransaction(aliasArgs)).created, true);
+  assert.equal(f.bodies[0].category, 'category');
+  assert.equal((await f.client.addTransaction(args)).status, 'already_exists');
+  assert.equal((await f.client.addTransaction(aliasArgs)).status, 'already_exists');
+  assert.equal(f.writes(), 1);
+});
+test('duplicate detection recognizes wallet IDs and consolidated transaction aliases', async () => {
+  const f = fixture({ category: { categories: ['wallet-category'] } });
+  f.records.push({ category: 'wallet-category', amount: 12.3, note: args.note, displayDate: args.date });
+  assert.equal((await f.client.addTransaction(args)).status, 'already_exists');
+  const g = fixture();
+  g.records.push({ category: { _id: 'response-category', categories: ['category'] }, amount: 12.3, note: args.note, displayDate: args.date });
+  assert.equal((await g.client.addTransaction(args)).status, 'already_exists');
+  assert.equal(f.writes() + g.writes(), 0);
+});
+test('unverified category IDs are rejected before dispatch', async () => {
+  const f = fixture();
+  await assert.rejects(() => f.client.addTransaction({ ...args, categoryId: 'unknown' }), /category_unavailable/);
   assert.equal(f.writes(), 0);
 });

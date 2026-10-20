@@ -56,7 +56,15 @@ explicitly asked to save; show the proposed details when they are inferred from
 an email and get the user's approval before saving. Refresh the ChatGPT connector's
 tool list after deployment to enable the new write tool.
 
-Active wallet and income/expense category membership are checked before writing.
+Active wallet and income/expense category validity are checked before writing.
+`get_categories` now uses the user-wide `/category/list-all` catalog, whose
+consolidated IDs are accepted by writes. Its `walletId` argument is retained for
+connector compatibility; the returned catalog is not wallet-scoped. A category's
+`account` field does not restrict it to that wallet. Explicit `exclude_accounts`
+entries are conservatively blocked. Only API-provided `categories` alias IDs are
+recognized; names are never used to guess alias relationships. Unknown IDs fail
+validation. Alias inputs are normalized to the consolidated ID before dispatch
+and duplicate checks recognize both ID forms.
 The service checks the same day's transactions for an exact category/amount/note/date
 match and returns `already_exists` without another write. Writes are serialized
 in the single process. Deliberately identical entries need distinct notes.

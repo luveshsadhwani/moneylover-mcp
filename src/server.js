@@ -22,7 +22,7 @@ function rpcServer(client, logger) {
     }
   };
   server.registerTool('get_wallets', { description: 'List the owner’s Money Lover wallets. Read only.', inputSchema: z.object({}).strict(), annotations }, () => call('wallets', () => client.getWallets()));
-  server.registerTool('get_categories', { description: 'List categories in a wallet. Read only.', inputSchema: z.object({ walletId: id }).strict(), annotations }, ({ walletId }) => call('categories', () => client.getCategories(walletId)));
+  server.registerTool('get_categories', { description: 'List the authenticated user’s consolidated categories from category/list-all, with IDs used for writes. walletId is retained for compatibility; this catalog is user-wide. Category account is not wallet ownership. Read only.', inputSchema: z.object({ walletId: id }).strict(), annotations }, ({ walletId }) => call('categories', () => client.getCategories(walletId)));
   server.registerTool('get_transactions', { description: 'Read transactions in a wallet; date difference at most 93 days. Read only.', inputSchema: z.object({ walletId: id, startDate: date, endDate: date }).strict(), annotations }, ({ walletId, startDate, endDate }) => {
     const days = (Date.parse(endDate) - Date.parse(startDate)) / 86400000;
     if (days < 0 || days > 93) return { content: [{ type: 'text', text: 'Date range must be 0 to 93 days' }], isError: true };

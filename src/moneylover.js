@@ -124,14 +124,27 @@ export class MoneyloverClient {
     const wallet = wallets.find(w => w._id === walletId);
     if (!wallet || wallet.isDelete || wallet.archived) reject('wallet_unavailable');
     const categories = await this.getCategories(walletId);
-    const category = categories.find(c => c._id === categoryId);
-    if (!category || category.isDelete || ![1, 2].includes(category.type) || (category.account && category.account !== walletId)) reject('category_unavailable');
+    // list-all supplies the consolidated IDs used by transaction/add. Its
+    // account field is not wallet ownership (verified by the owner's writes).
+    // Accept aliases only when the API explicitly lists the relationship.
+    const matches = categories.filter(c => c._id === categoryId ||
+      (Array.isArray(c.categories) && c.categories.includes(categoryId)));
+    const category = matches.length === 1 ? matches[0] : null;
+    if (!category || typeof category._id !== 'string' || !category._id ||
+        category.isDelete || category.archived || ![1, 2].includes(category.type)) reject('category_unavailable');
+    // Conservatively refuse an explicit exclusion; do not infer availability
+    // from the originating account field or from a category's name.
+    if (Array.isArray(category.exclude_accounts) && category.exclude_accounts.includes(walletId)) reject('category_excluded');
+    payload.category = category._id;
+    const categoryIds = new Set([categoryId, category._id,
+      ...(Array.isArray(category.categories) ? category.categories.filter(id => typeof id === 'string') : [])]);
     const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     const result = await this.getTransactions(walletId, date, date);
     const transactions = Array.isArray(result) ? result : result?.transactions;
     if (!Array.isArray(transactions)) reject('duplicate_check_unavailable');
     const duplicate = transactions.some(t =>
-      (typeof t.category === 'string' ? t.category : t.category?._id) === categoryId &&
+      (categoryIds.has(typeof t.category === 'string' ? t.category : t.category?._id) ||
+        (Array.isArray(t.category?.categories) && t.category.categories.some(id => categoryIds.has(id)))) &&
       Number(t.amount) === Number(amount) && (t.note ?? '') === note &&
       typeof t.displayDate === 'string' && t.displayDate.slice(0, 10) === date);
     if (duplicate) {
@@ -170,6 +183,8 @@ export class MoneyloverClient {
     }
   }
   getWallets() { return this.#query('/wallet/list', {}); }
-  getCategories(walletId) { return this.#query('/category/list', { walletId }, true); }
+  // walletId remains in the MCP schema for compatibility. list-all is an
+  // authenticated user-wide catalog, not a wallet-scoped category/list call.
+  getCategories(walletId) { return this.#query('/category/list-all', {}); }
   getTransactions(walletId, startDate, endDate) { return this.#query('/transaction/list', { walletId, startDate, endDate }); }
 }
