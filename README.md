@@ -4,7 +4,7 @@ Node **22**, an official MCP SDK Streamable HTTP transport (stateless JSON), and
 Cloudflare Tunnel + Access Managed OAuth. Money Lover API calls originate from
 **the DigitalOcean droplet**, not from Workers. The API is unofficial.
 
-`get_wallets`, `get_categories`, `get_transactions`, `add_transaction`, and `edit_transaction` are registered.
+`get_expense_rules`, `get_wallets`, `get_categories`, `get_transactions`, `add_transaction`, and `edit_transaction` are registered.
 Tokens and credentials stay server-side; no login tool is exposed.
 Transactions require valid calendar dates with an end-minus-start limit of 93 days.
 
@@ -45,6 +45,13 @@ logs in once, subsequent calls reuse it. No login happens during startup or heal
 checks. Persisting tokens across restarts is deliberately not part of this design.
 Use one replica; restarts/deployments may count as devices. `limitDevice` behavior
 remains unverified. Financial responses are never cached or logged.
+
+## Expense recording preferences
+
+Call `get_expense_rules` before using `add_transaction` or `edit_transaction`.
+The read-only tool returns a Markdown guide from `src/expense-rules.js` with the owner's observed categorization, note style, and operational safeguards. It makes no Money Lover API calls. Tool descriptions request this ordering, but clients may skip it; this is guidance, not server-side enforcement. Existing transaction validations remain authoritative.
+
+Because this repository is public, sensitive wallet/transaction identifiers, personal examples and cross-app audit document identifiers are excluded. Confirm wallet mappings using authenticated live tools or private context; do not infer them from the public guide.
 
 ## Adding transactions
 
