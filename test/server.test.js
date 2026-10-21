@@ -46,7 +46,7 @@ test('real SDK client initializes, lists preference rules plus three reads and t
   assert.deepEqual(list.tools.map(t => t.name), ['get_expense_rules', 'get_wallets', 'get_categories', 'get_transactions', 'add_transaction', 'edit_transaction']);
   assert.ok(list.tools.slice(0, 4).every(t => t.annotations.readOnlyHint));
   assert.equal(list.tools[4].annotations.readOnlyHint, false);
-  assert.equal(list.tools[3].annotations.idempotentHint, false);
+  assert.equal(list.tools[4].annotations.idempotentHint, false);
   const rules = await client.callTool({ name: 'get_expense_rules', arguments: {} });
   assert.match(rules.structuredContent.rules, /Categorize by the \*purpose\*/);
   assert.match(rules.structuredContent.rules, /Asia\/Kuala_Lumpur/);
