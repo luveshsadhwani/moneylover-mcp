@@ -14,8 +14,8 @@ async function sign(overrides = {}, signer = keys.privateKey) {
 }
 const token = await sign();
 const authHeaders = { 'cf-access-jwt-assertion': token };
-let reads = 0, writes = 0;
-const app = createApp(config, { verify, client: { getWallets: async () => { reads++; return [{ id: 'fixture' }]; }, getCategories: async () => [], getTransactions: async () => [], addTransaction: async () => { writes++; return { status: 'created', created: true }; } }, logger: () => {} });
+let reads = 0, writes = 0, edits = 0;
+const app = createApp(config, { verify, client: { getWallets: async () => { reads++; return [{ id: 'fixture' }]; }, editTransaction: async args => { edits++; return { status: 'edited', edited: true, args }; }, getCategories: async () => [], getTransactions: async () => [], addTransaction: async () => { writes++; return { status: 'created', created: true }; } }, logger: () => {} });
 await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${app.address().port}/mcp`;
 test.after(() => new Promise(resolve => { app.close(resolve); app.closeAllConnections(); }));
@@ -39,11 +39,11 @@ test('all MCP requests require signed Access JWT before any upstream reads', asy
   assert.equal(writes, 0);
   assert.equal(reads, before);
 });
-test('real SDK client initializes, lists three reads plus one write and calls a tool over HTTP', async () => {
+test('real SDK client initializes, lists three reads plus two writes and calls a tool over HTTP', async () => {
   const client = new Client({ name: 'acceptance', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: authHeaders } }));
   const list = await client.listTools();
-  assert.deepEqual(list.tools.map(t => t.name), ['get_wallets', 'get_categories', 'get_transactions', 'add_transaction']);
+  assert.deepEqual(list.tools.map(t => t.name), ['get_wallets', 'get_categories', 'get_transactions', 'add_transaction', 'edit_transaction']);
   assert.ok(list.tools.slice(0, 3).every(t => t.annotations.readOnlyHint));
   assert.equal(list.tools[3].annotations.readOnlyHint, false);
   assert.equal(list.tools[3].annotations.idempotentHint, false);
@@ -61,6 +61,15 @@ test('real SDK client initializes, lists three reads plus one write and calls a 
   assert.equal(writes, 0);
   assert.equal((await client.callTool({ name: 'add_transaction', arguments: writeArgs })).structuredContent.result.created, true);
   assert.equal(writes, 1);
+  assert.equal(list.tools[4].annotations.destructiveHint, true);
+  const editArgs = { walletId: 'a', transactionId: 'entry', expected: { categoryId: 'b', amount: '1.20', date: '2026-10-19', note: '' }, changes: { note: 'Fixed' } };
+  for (const invalid of [{ expected: undefined }, { changes: {} }, { changes: { walletId: 'other' } }, { changes: { amount: 10 } }, { changes: { date: '2026-02-30' } }]) {
+    assert.equal((await client.callTool({ name: 'edit_transaction', arguments: { ...editArgs, ...invalid } })).isError, true);
+  }
+  assert.equal(edits, 0);
+  const edited = await client.callTool({ name: 'edit_transaction', arguments: editArgs });
+  assert.deepEqual(edited.structuredContent.result.args, editArgs);
+  assert.equal(edits, 1);
   await client.close();
 });
 test('rejects cross-origin calls, malformed and oversized bodies', async () => {

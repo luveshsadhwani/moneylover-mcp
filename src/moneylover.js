@@ -1,3 +1,4 @@
+import { referenceId, validDate, validAmount, validId, categoryMatches, snapshotMatches, editPayload } from './edit.js';
 import { createHash, randomUUID } from 'node:crypto';
 // Protocol adapted from the owner's Worker bridge; financial responses are never cached.
 const BASE = 'https://web.moneylover.me/api';
@@ -179,6 +180,74 @@ export class MoneyloverClient {
         throw new UpstreamError('transaction/add', `outcome_unknown_${error.reason}_check_wallet_before_retry`, error.status, false, error.apiCode, error.diagnostics);
       }
       throw new UpstreamError('transaction/add', 'outcome_unknown_internal_error_check_wallet_before_retry');
+    }
+  }
+  editTransaction(params) {
+    const work = this.#writeQueue.then(() => this.#editTransaction(params));
+    this.#writeQueue = work.catch(() => {});
+    return work;
+  }
+  async #editTransaction(params) {
+    const requestId = randomUUID();
+    let dispatched = false;
+    const log = fields => this.logger({ request_id: requestId, stage: 'transaction/edit', ...fields });
+    const reject = reason => {
+      log({ event: 'moneylover_write_stopped', phase: dispatched ? 'after_dispatch' : 'before_dispatch', reason });
+      throw new UpstreamError('transaction/edit', reason);
+    };
+    const { walletId, transactionId, expected, changes } = params ?? {};
+    const validSnapshot = v => v && validId(v.categoryId) && validAmount(v.amount) && validDate(v.date) && typeof v.note === 'string' && v.note.length <= 2000;
+    if (!validId(walletId) || !validId(transactionId) || !validSnapshot(expected) || !changes ||
+        !Object.keys(changes).length || Object.keys(changes).some(k => !['categoryId', 'amount', 'date', 'note'].includes(k)) ||
+        !validSnapshot({ ...expected, ...changes })) reject('invalid_arguments');
+    const desired = { ...expected, ...changes };
+    const wallet = (await this.getWallets()).find(w => w._id === walletId);
+    if (!wallet || wallet.isDelete || wallet.archived) reject('wallet_unavailable');
+    const categories = await this.getCategories(walletId);
+    const matches = categories.filter(c => categoryMatches(c, desired.categoryId));
+    const category = matches.length === 1 ? matches[0] : null;
+    if (!category || !validId(category._id) || category.isDelete || category.archived || ![1, 2].includes(category.type)) reject('category_unavailable');
+    if (category.exclude_accounts?.includes(walletId)) reject('category_excluded');
+    if (/^IS_(DEBT|LOAN|REPAYMENT|TRANSFER)/.test(category.metadata ?? '')) reject('linked_transaction_unsupported');
+    desired.categoryId = category._id;
+    const read = async date => {
+      const data = await this.getTransactions(walletId, date, date);
+      const rows = Array.isArray(data) ? data : data?.transactions;
+      if (!Array.isArray(rows)) reject('transaction_check_unavailable');
+      return rows;
+    };
+    const rows = await read(expected.date);
+    const targets = rows.filter(t => t._id === transactionId);
+    const target = targets.length === 1 ? targets[0] : null;
+    if (!target || target.isDelete || referenceId(target.account) !== walletId) reject('transaction_unavailable');
+    if (snapshotMatches(target, desired)) return { status: 'already_matches', edited: false, transaction: target };
+    if (!snapshotMatches(target, expected)) reject('transaction_changed_refresh_before_edit');
+    const payload = editPayload(target, walletId, desired, reject);
+    log({ event: 'moneylover_write_requested', payload });
+    const destinationRows = desired.date === expected.date ? rows : await read(desired.date);
+    if (destinationRows.some(t => t._id !== transactionId && snapshotMatches(t, desired))) reject('duplicate_transaction');
+    // Block further edits to this record after an uncertain write, even if the
+    // caller changes the desired payload. This guard lasts until process restart.
+    const fingerprint = createHash('sha256').update(JSON.stringify(['edit', walletId, transactionId])).digest('hex');
+    if (this.#uncertain.has(fingerprint)) reject('retry_blocked_previous_outcome_unknown_no_write_sent');
+    if (this.#uncertain.size >= 1000) reject('uncertain_write_limit_check_wallet');
+    const token = await this.#getToken();
+    this.#uncertain.add(fingerprint);
+    try {
+      const headers = { 'content-type': 'application/json', accept: 'application/json', dataformat: 'json', 'cache-control': 'no-store' };
+      log({ event: 'moneylover_write_dispatch', method: 'POST', path: '/api/transaction/edit', headers, payload });
+      dispatched = true;
+      await this.#json('transaction/edit', `${BASE}/transaction/edit`, {
+        method: 'POST', headers: { ...headers, Authorization: `AuthJWT ${token}` }, body: JSON.stringify(payload)
+      });
+      const verified = (await read(desired.date)).filter(t => t._id === transactionId && referenceId(t.account) === walletId && !t.isDelete);
+      if (verified.length !== 1 || !snapshotMatches(verified[0], desired)) reject('verification_failed');
+      this.#uncertain.delete(fingerprint);
+      log({ event: 'moneylover_write_confirmed' });
+      return { status: 'edited', edited: true, transaction: verified[0] };
+    } catch (error) {
+      log({ event: 'moneylover_write_failed', reason: error instanceof UpstreamError ? error.reason : 'internal_error' });
+      throw new UpstreamError('transaction/edit', `outcome_unknown_${error instanceof UpstreamError ? error.reason : 'internal_error'}_check_wallet_before_retry`, error.status ?? null, false, error.apiCode ?? null, error.diagnostics ?? null);
     }
   }
   getWallets() { return this.#query('/wallet/list', {}); }

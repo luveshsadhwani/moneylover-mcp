@@ -4,7 +4,7 @@ Node **22**, an official MCP SDK Streamable HTTP transport (stateless JSON), and
 Cloudflare Tunnel + Access Managed OAuth. Money Lover API calls originate from
 **the DigitalOcean droplet**, not from Workers. The API is unofficial.
 
-`get_wallets`, `get_categories`, `get_transactions`, and `add_transaction` are registered.
+`get_wallets`, `get_categories`, `get_transactions`, `add_transaction`, and `edit_transaction` are registered.
 Tokens and credentials stay server-side; no login tool is exposed.
 Transactions require valid calendar dates with an end-minus-start limit of 93 days.
 
@@ -196,3 +196,39 @@ The original `index.js`, `test.mjs`, and `wrangler.toml` remain as the legacy Wo
 implementation for rollback/reference; they are excluded from the container.
 Client protocol reference: https://github.com/ferdhika31/moneylover-mcp (ISC).
 The remote server is independently implemented; no upstream server or login tool is included.
+
+## Editing transactions
+
+`edit_transaction` edits amount, category, date or note on one ordinary income or
+expense. It does not move wallets or support linked transfers/debts, recurring
+entries, multiple images or unrecognized metadata. Read the transaction first and
+provide `walletId`, `transactionId`, `expected` (current `categoryId`, positive
+string `amount`, `date`, and `note`) and a nonempty `changes` object containing only
+the fields requested by the user. An empty note clears the note.
+
+```json
+{
+  "walletId": "wallet-id",
+  "transactionId": "transaction-id",
+  "expected": { "categoryId": "category-id", "amount": "10.20", "date": "2026-10-19", "note": "Original" },
+  "changes": { "note": "Corrected" }
+}
+```
+
+The server scopes categories to the wallet, checks the current transaction against
+`expected`, preserves the web app's receipt/contact/event/location/reminder/report
+fields, and refuses a duplicate of another entry. Writes share the add queue.
+It sends POST `/api/transaction/edit` with `_id`, then verifies the requested values
+by reading the transaction on its resulting date. A matching entry is a no-op.
+An uncertain result is never automatically retried and blocks further edits to
+that transaction for this process lifetime. Inspect the wallet after an unknown
+outcome; a restart clears this in-memory guard. The upstream API offers no known
+conditional update, so a concurrent external edit between read and write cannot
+be prevented. Checks cover the expected core fields, not a full version token.
+
+Protocol source: Money Lover public web bundle
+`/static/js/app.5b4b1d6ce89b2d6a7178.js` inspected 2026-10-21
+(`AddTransactionDialog` payload and `Transactions.edit` action). The upstream
+spelling `longtitude` is intentional. Local tests use synthetic fixtures only;
+a live edit has not been tested. Payload logs contain financial details, but no
+credentials, authorization headers, tokens or response bodies.
