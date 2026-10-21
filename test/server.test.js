@@ -39,14 +39,21 @@ test('all MCP requests require signed Access JWT before any upstream reads', asy
   assert.equal(writes, 0);
   assert.equal(reads, before);
 });
-test('real SDK client initializes, lists three reads plus two writes and calls a tool over HTTP', async () => {
+test('real SDK client initializes, lists preference rules plus three reads and two writes and calls a tool over HTTP', async () => {
   const client = new Client({ name: 'acceptance', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: authHeaders } }));
   const list = await client.listTools();
-  assert.deepEqual(list.tools.map(t => t.name), ['get_wallets', 'get_categories', 'get_transactions', 'add_transaction', 'edit_transaction']);
-  assert.ok(list.tools.slice(0, 3).every(t => t.annotations.readOnlyHint));
-  assert.equal(list.tools[3].annotations.readOnlyHint, false);
-  assert.equal(list.tools[3].annotations.idempotentHint, false);
+  assert.deepEqual(list.tools.map(t => t.name), ['get_expense_rules', 'get_wallets', 'get_categories', 'get_transactions', 'add_transaction', 'edit_transaction']);
+  assert.ok(list.tools.slice(0, 4).every(t => t.annotations.readOnlyHint));
+  assert.equal(list.tools[4].annotations.readOnlyHint, false);
+  assert.equal(list.tools[4].annotations.idempotentHint, false);
+  const rules = await client.callTool({ name: 'get_expense_rules', arguments: {} });
+  assert.match(rules.structuredContent.rules, /Categorize by the \*purpose\*/);
+  assert.match(rules.structuredContent.rules, /Asia\/Kuala_Lumpur/);
+  assert.equal(writes, 0);
+  assert.equal(reads, 0);
+  assert.match(list.tools[4].description, /get_expense_rules/);
+  assert.match(list.tools[5].description, /get_expense_rules/);
   const result = await client.callTool({ name: 'get_wallets', arguments: {} });
   assert.deepEqual(result.structuredContent.wallets, [{ id: 'fixture' }]);
   for (const args of [{ walletId: 'a', startDate: '2026-02-30', endDate: '2026-03-01' }, { walletId: 'a', startDate: '2026-01-01', endDate: '2026-10-01' }, { walletId: 'a', startDate: '2026-01-02', endDate: '2026-01-01' }]) {
@@ -61,7 +68,7 @@ test('real SDK client initializes, lists three reads plus two writes and calls a
   assert.equal(writes, 0);
   assert.equal((await client.callTool({ name: 'add_transaction', arguments: writeArgs })).structuredContent.result.created, true);
   assert.equal(writes, 1);
-  assert.equal(list.tools[4].annotations.destructiveHint, true);
+  assert.equal(list.tools[5].annotations.destructiveHint, true);
   const editArgs = { walletId: 'a', transactionId: 'entry', expected: { categoryId: 'b', amount: '1.20', date: '2026-10-19', note: '' }, changes: { note: 'Fixed' } };
   for (const invalid of [{ expected: undefined }, { changes: {} }, { changes: { walletId: 'other' } }, { changes: { amount: 10 } }, { changes: { date: '2026-02-30' } }]) {
     assert.equal((await client.callTool({ name: 'edit_transaction', arguments: { ...editArgs, ...invalid } })).isError, true);
