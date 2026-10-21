@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { loadConfig, createVerifier } from './auth.js';
 import { MoneyloverClient, UpstreamError } from './moneylover.js';
+import { expenseRecordingRules } from './expense-rules.js';
 const id = z.string().min(1).max(256);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -21,6 +22,11 @@ function rpcServer(client, logger) {
       return { content: [{ type: 'text', text: message }], isError: true };
     }
   };
+  server.registerTool('get_expense_rules', {
+    description: 'Read the owner\'s expense categorization, wallet-selection, note-format and safety preferences. Call this first before recording or editing Money Lover transactions. Read only; no upstream login or financial mutation.',
+    inputSchema: z.object({}).strict(),
+    annotations: { ...annotations, openWorldHint: false }
+  }, () => ({ content: [{ type: 'text', text: expenseRecordingRules }], structuredContent: { rules: expenseRecordingRules } }));
   server.registerTool('get_wallets', { description: 'List the owner’s Money Lover wallets. Read only.', inputSchema: z.object({}).strict(), annotations }, () => call('wallets', () => client.getWallets()));
   server.registerTool('get_categories', { description: 'List categories for the selected wallet from category/list-all, filtered by account. Returns consolidated category IDs used for writes. Read only.', inputSchema: z.object({ walletId: id }).strict(), annotations }, ({ walletId }) => call('categories', () => client.getCategories(walletId)));
   server.registerTool('get_transactions', { description: 'Read transactions in a wallet; date difference at most 93 days. Read only.', inputSchema: z.object({ walletId: id, startDate: date, endDate: date }).strict(), annotations }, ({ walletId, startDate, endDate }) => {
@@ -29,7 +35,7 @@ function rpcServer(client, logger) {
     return call('transactions', () => client.getTransactions(walletId, startDate, endDate));
   });
   server.registerTool('add_transaction', {
-    description: 'Create one income or expense in Money Lover. Use only when the user explicitly asks to save this entry; resolve wallet/category first. Amount is positive in wallet currency, category determines income/expense. Exact date/category/amount/note matches return already_exists. Never blindly retry an unknown outcome: inspect the wallet first.',
+    description: 'Before this operation, call get_expense_rules and apply the owner’s recorded preferences. Create one income or expense in Money Lover. Use only when the user explicitly asks to save this entry; resolve wallet/category first. Amount is positive in wallet currency, category determines income/expense. Exact date/category/amount/note matches return already_exists. Never blindly retry an unknown outcome: inspect the wallet first.',
     inputSchema: z.object({ walletId: id, categoryId: id, amount: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/).refine(v => Number(v) > 0), date, note: z.string().max(2000).default('') }).strict(),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, args => call('result', () => client.addTransaction(args)));
@@ -38,7 +44,7 @@ function rpcServer(client, logger) {
     date, note: z.string().max(2000)
   };
   server.registerTool('edit_transaction', {
-    description: 'Edit one existing ordinary income/expense only when explicitly requested. Read get_transactions first; supply its ID and expected current amount, categoryId, date and note. changes contains only requested fields. Preserves metadata; cannot move wallets or edit linked transfers/debts. Refuses stale values and duplicates, verifies by reading back, never automatically retries. Unknown outcomes require inspection before any further write.',
+    description: 'Before this operation, call get_expense_rules and apply the owner’s recorded preferences. Edit one existing ordinary income/expense only when explicitly requested. Read get_transactions first; supply its ID and expected current amount, categoryId, date and note. changes contains only requested fields. Preserves metadata; cannot move wallets or edit linked transfers/debts. Refuses stale values and duplicates, verifies by reading back, never automatically retries. Unknown outcomes require inspection before any further write.',
     inputSchema: z.object({ walletId: id, transactionId: id, expected: z.object(editFields).strict(),
       changes: z.object(editFields).partial().strict().refine(v => Object.keys(v).length > 0) }).strict(),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
