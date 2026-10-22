@@ -1,4 +1,7 @@
-FROM node:22-bookworm-slim
+FROM node:22.23.4-bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production NODE_OPTIONS=--max-old-space-size=160
 COPY package.json package-lock.json ./
