@@ -239,3 +239,48 @@ Protocol source: Money Lover public web bundle
 spelling `longtitude` is intentional. Local tests use synthetic fixtures only;
 a live edit has not been tested. Payload logs contain financial details, but no
 credentials, authorization headers, tokens or response bodies.
+
+### Keyword transaction search
+
+Use `search_transactions` for questions about a purchase or a transaction note,
+instead of retrieving wallet histories:
+
+```json
+{"query":"chicken rice","limit":50,"offset":0}
+```
+
+`query` is required, nonblank, and at most 500 characters. Optional filters are
+`walletId`, `categoryId`, `startDate`, and `endDate` (`YYYY-MM-DD`). Dates are
+filters passed to Money Lover; no default date window or 93-day history
+restriction is imposed. `categoryId` is an exact upstream category ID, not a name
+or an automatic expansion across equivalent wallet categories.
+
+Without `walletId`, one `/wallet/list` call supplies all nondeleted, nonarchived
+wallet IDs to a single `POST /transaction/search`. No wallet histories or search
+configuration data are retrieved. With `walletId`, it must occur in that same
+owner-authorized list. Search uses the existing AuthJWT login/token cache and
+Cloudflare Access owner authorization. It performs no financial writes and does
+not cache or log search queries or results.
+
+The upstream payload maps `query` to `note`, wallets to `accounts`, and category
+to `categoryIDs`. Matching (including case, accents, word order and substring
+behavior) is controlled by Money Lover; this is note search, not fuzzy semantic
+search. `limit` defaults to 50 (1–100); `offset` defaults to 0 (0–1,000,000).
+Results are under `search`, containing compact `transactions` (ID, date, amount,
+wallet ID/name/currency, note, category ID/name), `limit`, `offset`, and
+`nextOffset`. Amounts remain in each wallet's currency. Use `nextOffset` with the
+same filters to continue. A full last page can require one final empty request;
+`nextOffset: null` indicates exhaustion. Offset pagination can shift if records
+change between requests. Upstream errors and unexpected shapes fail explicitly;
+there is no history-scan fallback.
+
+Contract evidence: Money Lover's public web app bundle
+`app.5b4b1d6ce89b2d6a7178.js`, `SearchTransaction.vue` and transaction store actions,
+inspected 2026-10-23; the reference client in
+https://github.com/juansebashr/moneylover-mcp also exposes this endpoint.
+These are unofficial API contracts, not a supported API guarantee. Mocked tests
+cover payloads, multiple wallets, empty results, pagination, errors, validation,
+and MCP authorization. **Authenticated account verification and end-to-end
+latency measurement are still pending**: after deploying a test branch, call
+`search_transactions` with the keyword from issue #2 and confirm the expected
+record privately. Do not commit live financial responses or credentials.

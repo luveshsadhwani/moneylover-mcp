@@ -14,8 +14,8 @@ async function sign(overrides = {}, signer = keys.privateKey) {
 }
 const token = await sign();
 const authHeaders = { 'cf-access-jwt-assertion': token };
-let reads = 0, writes = 0, edits = 0;
-const app = createApp(config, { verify, client: { getWallets: async () => { reads++; return [{ id: 'fixture' }]; }, editTransaction: async args => { edits++; return { status: 'edited', edited: true, args }; }, getCategories: async () => [], getTransactions: async () => [], addTransaction: async () => { writes++; return { status: 'created', created: true }; } }, logger: () => {} });
+let reads = 0, writes = 0, edits = 0, searches = 0;
+const app = createApp(config, { verify, client: { searchTransactions: async args => { searches++; return { transactions: [], ...args }; }, getWallets: async () => { reads++; return [{ id: 'fixture' }]; }, editTransaction: async args => { edits++; return { status: 'edited', edited: true, args }; }, getCategories: async () => [], getTransactions: async () => [], addTransaction: async () => { writes++; return { status: 'created', created: true }; } }, logger: () => {} });
 await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${app.address().port}/mcp`;
 test.after(() => new Promise(resolve => { app.close(resolve); app.closeAllConnections(); }));
@@ -37,23 +37,31 @@ test('all MCP requests require signed Access JWT before any upstream reads', asy
   assert.equal((await post({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, { 'cf-access-jwt-assertion': 'forged', 'cf-access-authenticated-user-email': config.owner })).status, 401);
   assert.equal((await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'add_transaction', arguments: { walletId: 'a', categoryId: 'b', amount: '1', date: '2026-10-19' } } }, {})).status, 401);
   assert.equal(writes, 0);
+  assert.equal((await post({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'search_transactions', arguments: { query: 'rice' } } }, {})).status, 401);
+  assert.equal(searches, 0);
   assert.equal(reads, before);
 });
-test('real SDK client initializes, lists preference rules plus three reads and two writes and calls a tool over HTTP', async () => {
+test('real SDK client initializes, lists preference rules plus four reads and two writes and calls a tool over HTTP', async () => {
   const client = new Client({ name: 'acceptance', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: authHeaders } }));
   const list = await client.listTools();
-  assert.deepEqual(list.tools.map(t => t.name), ['get_expense_rules', 'get_wallets', 'get_categories', 'get_transactions', 'add_transaction', 'edit_transaction']);
-  assert.ok(list.tools.slice(0, 4).every(t => t.annotations.readOnlyHint));
-  assert.equal(list.tools[4].annotations.readOnlyHint, false);
-  assert.equal(list.tools[4].annotations.idempotentHint, false);
+  assert.deepEqual(list.tools.map(t => t.name), ['get_expense_rules', 'get_wallets', 'get_categories', 'get_transactions', 'search_transactions', 'add_transaction', 'edit_transaction']);
+  assert.ok(list.tools.slice(0, 5).every(t => t.annotations.readOnlyHint));
+  assert.equal(list.tools[5].annotations.readOnlyHint, false);
+  assert.equal(list.tools[5].annotations.idempotentHint, false);
   const rules = await client.callTool({ name: 'get_expense_rules', arguments: {} });
   assert.match(rules.structuredContent.rules, /Categorize by the \*purpose\*/);
   assert.match(rules.structuredContent.rules, /Asia\/Kuala_Lumpur/);
   assert.equal(writes, 0);
   assert.equal(reads, 0);
-  assert.match(list.tools[4].description, /get_expense_rules/);
   assert.match(list.tools[5].description, /get_expense_rules/);
+  assert.match(list.tools[6].description, /get_expense_rules/);
+  const search = await client.callTool({ name: 'search_transactions', arguments: { query: 'rice' } });
+  assert.deepEqual(search.structuredContent.search, { transactions: [], query: 'rice', limit: 50, offset: 0 });
+  for (const invalid of [{ query: '' }, { query: 'rice', limit: 101 }, { query: 'rice', offset: -1 }, { query: 'rice', startDate: '2026-02-30' }, { query: 'rice', startDate: '2026-10-01', endDate: '2026-01-01' }, { query: 'rice', accounts: ['other'] }]) {
+    assert.equal((await client.callTool({ name: 'search_transactions', arguments: invalid })).isError, true);
+  }
+  assert.equal(searches, 1);
   const result = await client.callTool({ name: 'get_wallets', arguments: {} });
   assert.deepEqual(result.structuredContent.wallets, [{ id: 'fixture' }]);
   for (const args of [{ walletId: 'a', startDate: '2026-02-30', endDate: '2026-03-01' }, { walletId: 'a', startDate: '2026-01-01', endDate: '2026-10-01' }, { walletId: 'a', startDate: '2026-01-02', endDate: '2026-01-01' }]) {
@@ -68,7 +76,7 @@ test('real SDK client initializes, lists preference rules plus three reads and t
   assert.equal(writes, 0);
   assert.equal((await client.callTool({ name: 'add_transaction', arguments: writeArgs })).structuredContent.result.created, true);
   assert.equal(writes, 1);
-  assert.equal(list.tools[5].annotations.destructiveHint, true);
+  assert.equal(list.tools[6].annotations.destructiveHint, true);
   const editArgs = { walletId: 'a', transactionId: 'entry', expected: { categoryId: 'b', amount: '1.20', date: '2026-10-19', note: '' }, changes: { note: 'Fixed' } };
   for (const invalid of [{ expected: undefined }, { changes: {} }, { changes: { walletId: 'other' } }, { changes: { amount: 10 } }, { changes: { date: '2026-02-30' } }]) {
     assert.equal((await client.callTool({ name: 'edit_transaction', arguments: { ...editArgs, ...invalid } })).isError, true);

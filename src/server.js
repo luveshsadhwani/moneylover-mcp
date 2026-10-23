@@ -34,6 +34,15 @@ function rpcServer(client, logger) {
     if (days < 0 || days > 93) return { content: [{ type: 'text', text: 'Date range must be 0 to 93 days' }], isError: true };
     return call('transactions', () => client.getTransactions(walletId, startDate, endDate));
   });
+  server.registerTool('search_transactions', {
+    description: 'Search transaction notes by keyword across all available owner wallets, or one wallet. Prefer this for purchase lookups instead of fetching histories. Read only. Matching follows Money Lover; case/accent behavior is upstream-defined. Use nextOffset to request subsequent pages; null means exhausted.',
+    inputSchema: z.object({ query: z.string().trim().min(1).max(500), walletId: id.optional(),
+      startDate: date.optional(), endDate: date.optional(), categoryId: id.optional(),
+      limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1000000).default(0) }).strict(), annotations
+  }, args => {
+    if (args.startDate && args.endDate && args.startDate > args.endDate) return { content: [{ type: 'text', text: 'startDate must not exceed endDate' }], isError: true };
+    return call('search', () => client.searchTransactions(args));
+  });
   server.registerTool('add_transaction', {
     description: 'Before this operation, call get_expense_rules and apply the owner’s recorded preferences. Create one income or expense in Money Lover. Use only when the user explicitly asks to save this entry; resolve wallet/category first. Amount is positive in wallet currency, category determines income/expense. Exact date/category/amount/note matches return already_exists. Never blindly retry an unknown outcome: inspect the wallet first.',
     inputSchema: z.object({ walletId: id, categoryId: id, amount: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/).refine(v => Number(v) > 0), date, note: z.string().max(2000).default('') }).strict(),
