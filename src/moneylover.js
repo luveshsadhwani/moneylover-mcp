@@ -250,6 +250,40 @@ export class MoneyloverClient {
       throw new UpstreamError('transaction/edit', `outcome_unknown_${error instanceof UpstreamError ? error.reason : 'internal_error'}_check_wallet_before_retry`, error.status ?? null, false, error.apiCode ?? null, error.diagnostics ?? null);
     }
   }
+  // Contract observed in Money Lover web app SearchTransaction.vue, 2026-10-23:
+  // note, accounts, categoryIDs, startDate/endDate, limit and offset.
+  async searchTransactions({ query, walletId, startDate, endDate, categoryId, limit = 50, offset = 0 } = {}) {
+    const reject = reason => { throw new UpstreamError('transaction/search', reason); };
+    if (typeof query !== 'string' || !query.trim() || query.length > 500 ||
+        (walletId !== undefined && !validId(walletId)) || (categoryId !== undefined && !validId(categoryId)) ||
+        (startDate !== undefined && !validDate(startDate)) || (endDate !== undefined && !validDate(endDate)) ||
+        (startDate !== undefined && endDate !== undefined && startDate > endDate) ||
+        !Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0 || offset > 1000000) reject('invalid_arguments');
+    // One wallet-list request supplies all accounts; never fetch wallet histories.
+    const wallets = await this.getWallets();
+    const available = wallets.filter(w => validId(w?._id) && !w.isDelete && !w.archived);
+    const selected = walletId === undefined ? available : available.filter(w => w._id === walletId);
+    if (walletId !== undefined && !selected.length) reject('wallet_unavailable');
+    if (!selected.length) return { transactions: [], limit, offset, nextOffset: null };
+    const payload = { note: query.trim(), accounts: selected.map(w => w._id), limit, offset,
+      ...(categoryId === undefined ? {} : { categoryIDs: [categoryId] }),
+      ...(startDate === undefined ? {} : { startDate }), ...(endDate === undefined ? {} : { endDate }) };
+    const rows = await this.#query('/transaction/search', payload);
+    if (rows.length > limit || rows.some(t => !t || typeof t !== 'object' || !validId(t._id) ||
+        !selected.some(w => w._id === referenceId(t.account)) || typeof t.displayDate !== 'string' ||
+        !validDate(t.displayDate.slice(0, 10)) || !Number.isFinite(Number(t.amount)) || t.amount == null)) reject('unexpected_data_shape');
+    return {
+      transactions: rows.map(t => {
+        const wallet = selected.find(w => w._id === referenceId(t.account));
+        return { id: t._id, date: t.displayDate.slice(0, 10), amount: t.amount,
+          wallet: { id: wallet._id, name: wallet.name ?? null, currency: wallet.currency ?? null },
+          note: typeof t.note === 'string' ? t.note : '',
+          category: { id: referenceId(t.category) ?? null, name: t.category?.name ?? null } };
+      }), limit, offset,
+      // A full page may be the last page. Fetch once more to establish exhaustion.
+      nextOffset: rows.length === limit ? offset + rows.length : null
+    };
+  }
   getWallets() { return this.#query('/wallet/list', {}); }
   async getCategories(walletId) {
     const categories = await this.#query('/category/list-all', {});
