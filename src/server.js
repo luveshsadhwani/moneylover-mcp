@@ -50,12 +50,12 @@ function rpcServer(client, logger) {
   }, args => call('result', () => client.addTransaction(args)));
   const editFields = {
     categoryId: id, amount: z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/).refine(v => Number(v) > 0),
-    date, note: z.string().max(2000), excludeReport: z.boolean()
+    date, note: z.string().max(2000)
   };
   server.registerTool('edit_transaction', {
     description: 'Before this operation, call get_expense_rules and apply the owner’s recorded preferences. Edit one existing ordinary income/expense only when explicitly requested. Read get_transactions first; supply its ID and expected current amount, categoryId, date and note. changes contains only requested fields, including optional excludeReport. Preserves metadata; cannot move wallets or edit linked transfers/debts. Refuses stale values and duplicates, verifies by reading back, never automatically retries. Unknown outcomes require inspection before any further write.',
     inputSchema: z.object({ walletId: id, transactionId: id, expected: z.object(editFields).strict(),
-      changes: z.object(editFields).partial().strict().refine(v => Object.keys(v).length > 0) }).strict(),
+      changes: z.object({ ...editFields, excludeReport: z.boolean() }).partial().strict().refine(v => Object.keys(v).length > 0) }).strict(),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
   }, args => call('result', () => client.editTransaction(args)));
   return server;
