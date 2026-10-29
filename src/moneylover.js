@@ -100,7 +100,7 @@ export class MoneyloverClient {
     this.#writeQueue = work.catch(() => {});
     return work;
   }
-  async #addTransaction({ walletId, categoryId, amount, date, note = '' }) {
+  async #addTransaction({ walletId, categoryId, amount, date, note = '', excludeReport = false }) {
     const requestId = randomUUID();
     let dispatched = false;
     const log = fields => this.logger({ request_id: requestId, stage: 'transaction/add', ...fields });
@@ -109,14 +109,14 @@ export class MoneyloverClient {
       throw new UpstreamError('transaction/add', reason);
     };
     if (![walletId, categoryId].every(v => typeof v === 'string' && v.length > 0 && v.length <= 256) ||
-        typeof note !== 'string' || note.length > 2000 ||
+        typeof note !== 'string' || note.length > 2000 || typeof excludeReport !== 'boolean' ||
         typeof amount !== 'string' || !/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 ||
         typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
         !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) reject('invalid_arguments');
     // Match the owner's successful browser/local request; retain dynamic IDs.
     const payload = {
       with: [], account: walletId, category: categoryId, amount: Number(amount),
-      note, displayDate: date, event: '', exclude_report: false,
+      note, displayDate: date, event: '', exclude_report: excludeReport,
       longitude: 0, latitude: 0, addressName: '', addressDetails: '',
       addressIcon: '', image: ''
     };
@@ -198,8 +198,9 @@ export class MoneyloverClient {
     const { walletId, transactionId, expected, changes } = params ?? {};
     const validSnapshot = v => v && validId(v.categoryId) && validAmount(v.amount) && validDate(v.date) && typeof v.note === 'string' && v.note.length <= 2000;
     if (!validId(walletId) || !validId(transactionId) || !validSnapshot(expected) || !changes ||
-        !Object.keys(changes).length || Object.keys(changes).some(k => !['categoryId', 'amount', 'date', 'note'].includes(k)) ||
-        !validSnapshot({ ...expected, ...changes })) reject('invalid_arguments');
+        !Object.keys(changes).length || Object.keys(changes).some(k => !['categoryId', 'amount', 'date', 'note', 'excludeReport'].includes(k)) ||
+        !validSnapshot({ ...expected, ...changes }) ||
+        (changes.excludeReport !== undefined && typeof changes.excludeReport !== 'boolean')) reject('invalid_arguments');
     const desired = { ...expected, ...changes };
     const wallet = (await this.getWallets()).find(w => w._id === walletId);
     if (!wallet || wallet.isDelete || wallet.archived) reject('wallet_unavailable');
@@ -220,9 +221,10 @@ export class MoneyloverClient {
     const targets = rows.filter(t => t._id === transactionId);
     const target = targets.length === 1 ? targets[0] : null;
     if (!target || target.isDelete || referenceId(target.account) !== walletId) reject('transaction_unavailable');
-    if (snapshotMatches(target, desired)) return { status: 'already_matches', edited: false, transaction: target };
+    if (snapshotMatches(target, desired) && (changes.excludeReport === undefined || target.exclude_report === changes.excludeReport)) return { status: 'already_matches', edited: false, transaction: target };
     if (!snapshotMatches(target, expected)) reject('transaction_changed_refresh_before_edit');
     const payload = editPayload(target, walletId, desired, reject);
+    if (changes.excludeReport !== undefined) payload.exclude_report = changes.excludeReport;
     log({ event: 'moneylover_write_requested', payload });
     const destinationRows = desired.date === expected.date ? rows : await read(desired.date);
     if (destinationRows.some(t => t._id !== transactionId && snapshotMatches(t, desired))) reject('duplicate_transaction');
@@ -241,7 +243,7 @@ export class MoneyloverClient {
         method: 'POST', headers: { ...headers, Authorization: `AuthJWT ${token}` }, body: JSON.stringify(payload)
       });
       const verified = (await read(desired.date)).filter(t => t._id === transactionId && referenceId(t.account) === walletId && !t.isDelete);
-      if (verified.length !== 1 || !snapshotMatches(verified[0], desired)) reject('verification_failed');
+      if (verified.length !== 1 || !snapshotMatches(verified[0], desired) || verified[0].exclude_report !== payload.exclude_report) reject('verification_failed');
       this.#uncertain.delete(fingerprint);
       log({ event: 'moneylover_write_confirmed' });
       return { status: 'edited', edited: true, transaction: verified[0] };
