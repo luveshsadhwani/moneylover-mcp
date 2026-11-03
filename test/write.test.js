@@ -186,3 +186,12 @@ test('other wallet rows cannot authorize a write or override selected wallet res
     assert.equal(f.writes(), 0);
   }
 });
+
+test('optional report exclusion reaches add payload and invalid values are rejected', async () => {
+  const f = fixture();
+  await f.client.addTransaction({ ...args, excludeReport: true });
+  assert.equal(f.bodies[0].exclude_report, true);
+  const bad = fixture();
+  await assert.rejects(() => bad.client.addTransaction({ ...args, excludeReport: 'true' }), /invalid_arguments/);
+  assert.equal(bad.writes(), 0);
+});

@@ -23,7 +23,7 @@ function fixture({ target = {}, mode = 'success', categories, extra = [] } = {})
     const body = JSON.parse(options.body); bodies.push(body);
     if (mode === 'timeout') throw new Error('secret-network');
     if (mode === '401') return new Response('', { status: 401 });
-    if (mode !== 'no-change') rows = rows.map(t => t._id === body._id ? { ...t, amount: body.amount, note: body.note, category: body.category, displayDate: body.displayDate } : t);
+    if (mode !== 'no-change') rows = rows.map(t => t._id === body._id ? { ...t, amount: body.amount, note: body.note, category: body.category, displayDate: body.displayDate, exclude_report: body.exclude_report } : t);
     if (mode === 'committed-timeout') throw new Error('secret-network');
     return Response.json({ error: 0, msg: 'transaction_edit_success' });
   } });
@@ -77,4 +77,17 @@ test('timeout, 401 and failed verification never replay writes, even with a diff
 test('committed timeout can be observed as a no-op without a second write', async () => {
   const f = fixture({ mode: 'committed-timeout' }); await assert.rejects(() => f.client.editTransaction(args), /outcome_unknown/);
   assert.equal((await f.client.editTransaction(args)).status, 'already_matches'); assert.equal(f.bodies.length, 1);
+});
+
+test('report-only edit updates exclusion and verifies it without changing other fields', async () => {
+  const f = fixture({ target: { exclude_report: false } });
+  const result = await f.client.editTransaction({ ...args, changes: { excludeReport: true } });
+  assert.equal(result.status, 'edited');
+  assert.equal(f.bodies[0].exclude_report, true);
+  assert.equal(result.transaction.exclude_report, true);
+  assert.equal(f.bodies[0].note, expected.note);
+});
+test('report-only edit fails if exclusion is not persisted', async () => {
+  const f = fixture({ target: { exclude_report: false }, mode: 'no-change' });
+  await assert.rejects(() => f.client.editTransaction({ ...args, changes: { excludeReport: true } }), /outcome_unknown/);
 });
